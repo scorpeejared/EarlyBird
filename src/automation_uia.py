@@ -26,14 +26,20 @@ Windows-only. Requires pywinauto (and its pywin32 dependency).
 from __future__ import annotations
 
 import logging
+import sys
 import os
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-LOG_DIR = Path(__file__).parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=LOG_DIR / "automation.log",

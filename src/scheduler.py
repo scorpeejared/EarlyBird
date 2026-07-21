@@ -14,14 +14,13 @@ import threading
 import time
 from datetime import datetime
 
-from storage import MeetingStore
-from models import Meeting
-import automation
-import automation_uia
-import notifier
-import recurrence
-import settings
-
+from .storage import MeetingStore
+from .models import Meeting
+from . import automation
+from . import automation_uia
+from . import notifier
+from . import recurrence
+from . import settings
 logger = logging.getLogger("meet_automation")
 
 POLL_INTERVAL_SECONDS = 15

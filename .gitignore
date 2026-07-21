@@ -1,7 +1,25 @@
-# Python cache files
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Specifically ignore the one in src/ (though the above line already catches it everywhere)
-src/__pycache__/
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Application data
+data/
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
