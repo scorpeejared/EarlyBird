@@ -15,11 +15,29 @@ hidden_imports = [
     "comtypes",
     "comtypes.stream",
     "playwright.sync_api",
+    # src/*.py files import each other using bare names (e.g. "import automation",
+    # "from storage import MeetingStore") rather than "from src import automation".
+    # That only works at runtime because main.py inserts the src/ folder into
+    # sys.path. PyInstaller's static analysis doesn't know to look there unless
+    # we tell it, so list every src module explicitly here as a safety net.
+    "automation",
+    "automation_uia",
+    "cdp_probe",
+    "launchers",
+    "models",
+    "notifier",
+    "recurrence",
+    "scheduler",
+    "settings",
+    "storage",
+    "tray",
 ]
 
 a = Analysis(
     ["main.py"],
-    pathex=[],
+    # Also add src/ to the search path so PyInstaller can actually resolve
+    # those bare-name imports above to real files, not just guess at them.
+    pathex=["src"],
     binaries=[],
     datas=[],
     hiddenimports=hidden_imports,
