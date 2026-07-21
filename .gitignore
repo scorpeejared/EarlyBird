@@ -1,0 +1,7 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Specifically ignore the one in src/ (though the above line already catches it everywhere)
+src/__pycache__/

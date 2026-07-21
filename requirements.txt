@@ -1,0 +1,7 @@
+playwright>=1.45
+plyer>=2.1
+pystray>=0.19
+Pillow>=10.0
+pyautogui>=0.9.54
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
