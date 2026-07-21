@@ -17,7 +17,10 @@ a handful of global values read on every join attempt, not per-meeting data.
 import json
 from pathlib import Path
 
-SETTINGS_PATH = Path(__file__).parent.parent / "data" / "settings.json"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+SETTINGS_PATH = DATA_DIR / "settings.json"
 
 _DEFAULTS = {
     "connections": [],
@@ -25,6 +28,11 @@ _DEFAULTS = {
 }
 
 ISOLATED_PROFILE_LABEL = "App's own isolated profile (default)"
+
+
+def ensure_data_dir() -> Path:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return DATA_DIR
 
 
 def load() -> dict:

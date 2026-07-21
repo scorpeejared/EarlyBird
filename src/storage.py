@@ -14,7 +14,10 @@ from typing import Optional
 from models import Meeting
 import recurrence
 
-DB_PATH = Path(__file__).parent.parent / "data" / "meetings.db"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = DATA_DIR / "meetings.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meetings (

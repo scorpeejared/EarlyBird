@@ -897,6 +897,7 @@ class App(tk.Tk):
         self.configure(bg=COLORS["bg"])
 
         self._setup_style()
+        settings.ensure_data_dir()
 
         self.store = MeetingStore()
         self.scheduler = SchedulerService(self.store, on_status_change=self._on_scheduler_status)
