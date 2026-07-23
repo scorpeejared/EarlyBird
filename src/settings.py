@@ -25,6 +25,12 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 _DEFAULTS = {
     "connections": [],
     "window_geometry": "",
+    "updates": {
+        "enabled": True,
+        "channel": "stable",  # future-proofing for a "beta" channel
+        "check_interval_minutes": 30,
+        "skipped_version": "",  # set when the user dismisses a specific release
+    },
 }
 
 ISOLATED_PROFILE_LABEL = "App's own isolated profile (default)"
@@ -106,4 +112,23 @@ def get_window_geometry() -> str:
 def save_window_geometry(geometry: str) -> None:
     full = load()
     full["window_geometry"] = geometry
+    _write(full)
+
+
+def get_update_settings() -> dict:
+    # Merge nested defaults too (not just top-level) so a settings.json
+    # written before a new update-related key existed still picks up
+    # that key's default instead of a KeyError.
+    stored = load().get("updates", {})
+    merged = dict(_DEFAULTS["updates"])
+    merged.update(stored)
+    return merged
+
+
+def save_update_settings(**changes) -> None:
+    full = load()
+    updates = dict(_DEFAULTS["updates"])
+    updates.update(full.get("updates", {}))
+    updates.update(changes)
+    full["updates"] = updates
     _write(full)

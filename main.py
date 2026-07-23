@@ -31,6 +31,7 @@ _src_path = Path(__file__).parent / "src"
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
+import logging
 import threading
 import tkinter as tk
 from datetime import datetime, date, time as dtime
@@ -41,6 +42,13 @@ from src.storage import MeetingStore
 from src.scheduler import SchedulerService
 from src import settings
 from src import recurrence
+from src.updater import UpdateManager, ReleaseInfo
+from src.updater.version import __version__ as APP_VERSION
+
+# Update checks look at this repo's GitHub Releases (never commits/branches -
+# see src/updater/github_release.py). Change this if the repo ever moves.
+UPDATE_REPO_OWNER = "scorpeejared"
+UPDATE_REPO_NAME = "EarlyBird"
 
 
 APP_TITLE = "EarlyBird 🐦"
@@ -885,6 +893,98 @@ class ConnectionsManagerDialog(tk.Toplevel):
             messagebox.showinfo("Launcher folder", path, parent=self)
 
 
+class UpdateToast(tk.Toplevel):
+    """Non-intrusive 'an update is available' notification.
+
+    Deliberately a plain Toplevel rather than a native OS notification:
+    plyer notifications (used elsewhere via notifier.py) can't carry
+    interactive buttons on every platform, and this needs two -
+    "Restart & Update" and "Later" - plus release notes. It's
+    non-modal (no grab_set) and positioned in a corner rather than
+    centered, so it never blocks or interrupts whatever the user is
+    doing, matching the "do not interrupt the user" requirement.
+    """
+
+    def __init__(self, parent, current_version: str, release: ReleaseInfo, on_restart, on_later):
+        super().__init__(parent)
+        self._on_restart = on_restart
+        self._on_later = on_later
+
+        self.overrideredirect(True)  # borderless, like a toast/snackbar
+        self.configure(bg=COLORS["border"])  # 1px "border" via padding trick below
+        self.attributes("-topmost", True)
+
+        width, height = 360, 280
+        self.geometry(f"{width}x{height}")
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        margin = 24
+        self.geometry(f"{width}x{height}+{screen_w - width - margin}+{screen_h - height - margin - 48}")
+
+        card = tk.Frame(self, bg=COLORS["surface"])
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        header = tk.Frame(card, bg=COLORS["surface"])
+        header.pack(fill="x", padx=16, pady=(14, 6))
+        tk.Label(
+            header, text="🐦 EarlyBird Update Available",
+            bg=COLORS["surface"], fg=COLORS["text"], font=FONTS["body_bold"],
+        ).pack(side="left")
+        tk.Label(
+            header, text="✕", bg=COLORS["surface"], fg=COLORS["text_secondary"],
+            font=FONTS["small_bold"], cursor="hand2",
+        ).pack(side="right")
+        header.winfo_children()[-1].bind("<Button-1>", lambda e: self._later())
+
+        tk.Label(
+            card,
+            text=f"Version {release.tag} is available (you have {current_version}).",
+            bg=COLORS["surface"], fg=COLORS["text"], font=FONTS["small"],
+            wraplength=328, justify="left",
+        ).pack(fill="x", padx=16, anchor="w")
+
+        notes_frame = tk.Frame(card, bg=COLORS["bg"])
+        notes_frame.pack(fill="both", expand=True, padx=16, pady=(10, 10))
+        notes_text = (release.notes or "No release notes provided.").strip()
+        notes = tk.Text(
+            notes_frame, bg=COLORS["bg"], fg=COLORS["text_secondary"], font=FONTS["small"],
+            wrap="word", relief="flat", borderwidth=0, height=8, padx=8, pady=8,
+        )
+        notes.insert("1.0", notes_text)
+        notes.configure(state="disabled")
+        notes.pack(fill="both", expand=True)
+
+        self._status_var = tk.StringVar(value="")
+        tk.Label(
+            card, textvariable=self._status_var, bg=COLORS["surface"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        ).pack(fill="x", padx=16, anchor="w")
+
+        footer = tk.Frame(card, bg=COLORS["surface"])
+        footer.pack(fill="x", padx=16, pady=(4, 14))
+        self._restart_btn = RoundedButton(
+            footer, text="Restart & Update", kind="primary", command=self._restart,
+        )
+        self._restart_btn.pack(side="right")
+        self._later_btn = RoundedButton(
+            footer, text="Later", kind="ghost", command=self._later,
+        )
+        self._later_btn.pack(side="right", padx=(0, 8))
+
+    def set_installing(self) -> None:
+        self._status_var.set("Downloading and preparing update...")
+        self._restart_btn.set_enabled(False)
+        self._later_btn.set_enabled(False)
+
+    def _restart(self) -> None:
+        self._on_restart()
+
+    def _later(self) -> None:
+        self._on_later()
+        self.destroy()
+
+
 # Main application window
 
 class App(tk.Tk):
@@ -901,7 +1001,14 @@ class App(tk.Tk):
 
         self.store = MeetingStore()
         self.scheduler = SchedulerService(self.store, on_status_change=self._on_scheduler_status)
+        self.update_manager = UpdateManager(
+            repo_owner=UPDATE_REPO_OWNER,
+            repo_name=UPDATE_REPO_NAME,
+            on_update_available=self._on_update_available,
+            on_status_change=self._on_scheduler_status,
+        )
         self.tray_icon = None  # set up lazily, see tray.py
+        self._update_toast: UpdateToast | None = None
         self.selected_meeting_id: int | None = None
         self._last_checked_var = tk.StringVar(value="—")
         self._transient_status_var = tk.StringVar(value="Ready")
@@ -909,6 +1016,7 @@ class App(tk.Tk):
         self._build_ui()
         self._refresh_all()
         self.scheduler.start()
+        self.update_manager.start()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(5000, self._periodic_refresh)
@@ -1237,6 +1345,49 @@ class App(tk.Tk):
     def _on_scheduler_status(self, message: str) -> None:
         self.after(0, lambda: self._transient_status_var.set(message))
 
+    # ---------- updates ----------
+
+    def _on_update_available(self, release: ReleaseInfo) -> None:
+        # Called from the update manager's background thread - hop
+        # back onto the Tk thread before touching any widgets, same
+        # convention as _on_scheduler_status above.
+        self.after(0, lambda: self._show_update_toast(release))
+
+    def _show_update_toast(self, release: ReleaseInfo) -> None:
+        if self._update_toast and self._update_toast.winfo_exists():
+            return  # already showing one - don't stack toasts
+        self._update_toast = UpdateToast(
+            self,
+            current_version=APP_VERSION,
+            release=release,
+            on_restart=lambda: self._start_restart_and_update(release),
+            on_later=lambda: self._dismiss_update(release),
+        )
+
+    def _dismiss_update(self, release: ReleaseInfo) -> None:
+        self.update_manager.dismiss(release)
+
+    def _start_restart_and_update(self, release: ReleaseInfo) -> None:
+        """Download + stage the update in a background thread (so the
+        UI never freezes), then run the app's normal quit sequence -
+        by the time this process exits, the detached updater script is
+        already waiting on its PID to do the file swap and relaunch."""
+        def worker():
+            try:
+                self.update_manager.download_and_install(release)
+            except Exception as e:
+                logging.getLogger("meet_automation").exception("Update install failed")
+                self.after(0, lambda: messagebox.showerror(
+                    "Update failed",
+                    f"Couldn't install the update:\n{e}\n\nEarlyBird will keep running normally.",
+                ))
+                return
+            self.after(0, self._quit)
+
+        if self._update_toast and self._update_toast.winfo_exists():
+            self._update_toast.set_installing()
+        threading.Thread(target=worker, daemon=True).start()
+
     # ---------- tray / lifecycle ----------
 
     def _minimize_to_tray(self) -> None:
@@ -1265,6 +1416,7 @@ class App(tk.Tk):
         except Exception:
             pass
         self.scheduler.stop()
+        self.update_manager.stop()
         if self.tray_icon:
             self.tray_icon.stop()
         self.destroy()
