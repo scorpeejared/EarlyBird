@@ -1073,6 +1073,37 @@ class App(tk.Tk):
     # ---------- UI construction ----------
 
     def _build_ui(self) -> None:
+        # --- Status bar (MOVED TO THE TOP) ---
+        # Packing this first with side="bottom" reserves its space at the bottom 
+        # so the expanding list_container doesn't squash it when resizing.
+        status_bar = tk.Frame(self, bg=COLORS["primary_soft"])
+        status_bar.pack(fill="x", side="bottom")
+        status_inner = tk.Frame(status_bar, bg=COLORS["primary_soft"])
+        status_inner.pack(fill="x", padx=18, pady=8)
+        tk.Label(
+            status_inner, text="🟢 Scheduler running", bg=COLORS["primary_soft"],
+            fg=COLORS["text"], font=FONTS["small_bold"],
+        ).pack(side="left")
+        tk.Label(
+            status_inner, textvariable=self._transient_status_var, bg=COLORS["primary_soft"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        ).pack(side="left", padx=(14, 0))
+        self._last_checked_label = tk.Label(
+            status_inner, textvariable=self._last_checked_var, bg=COLORS["primary_soft"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        )
+        self._last_checked_label.pack(side="right")
+        tk.Label(
+            status_inner, text=f"v{APP_VERSION}", bg=COLORS["primary_soft"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        ).pack(side="right", padx=(0, 14))
+        check_now = tk.Label(
+            status_inner, text="Check for updates", bg=COLORS["primary_soft"],
+            fg=COLORS["primary"], font=FONTS["small"], cursor="hand2",
+        )
+        check_now.pack(side="right", padx=(0, 14))
+        check_now.bind("<Button-1>", lambda e: self._check_for_updates_now())
+
         # --- Header ---
         header = tk.Frame(self, bg=COLORS["primary"])
         header.pack(fill="x")
@@ -1109,37 +1140,9 @@ class App(tk.Tk):
         )
 
         # --- Meeting list area (scrollable card list, or empty state) ---
+        # Packed LAST so it expands to fill the remaining space between the top elements and the status bar
         self.list_container = tk.Frame(self, bg=COLORS["bg"])
         self.list_container.pack(fill="both", expand=True, padx=24, pady=(0, 12))
-
-        # --- Status bar ---
-        status_bar = tk.Frame(self, bg=COLORS["primary_soft"])
-        status_bar.pack(fill="x", side="bottom")
-        status_inner = tk.Frame(status_bar, bg=COLORS["primary_soft"])
-        status_inner.pack(fill="x", padx=18, pady=8)
-        tk.Label(
-            status_inner, text="🟢 Scheduler running", bg=COLORS["primary_soft"],
-            fg=COLORS["text"], font=FONTS["small_bold"],
-        ).pack(side="left")
-        tk.Label(
-            status_inner, textvariable=self._transient_status_var, bg=COLORS["primary_soft"],
-            fg=COLORS["text_secondary"], font=FONTS["small"],
-        ).pack(side="left", padx=(14, 0))
-        self._last_checked_label = tk.Label(
-            status_inner, textvariable=self._last_checked_var, bg=COLORS["primary_soft"],
-            fg=COLORS["text_secondary"], font=FONTS["small"],
-        )
-        self._last_checked_label.pack(side="right")
-        tk.Label(
-            status_inner, text=f"v{APP_VERSION}", bg=COLORS["primary_soft"],
-            fg=COLORS["text_secondary"], font=FONTS["small"],
-        ).pack(side="right", padx=(0, 14))
-        check_now = tk.Label(
-            status_inner, text="Check for updates", bg=COLORS["primary_soft"],
-            fg=COLORS["primary"], font=FONTS["small"], cursor="hand2",
-        )
-        check_now.pack(side="right", padx=(0, 14))
-        check_now.bind("<Button-1>", lambda e: self._check_for_updates_now())
 
     def _check_for_updates_now(self) -> None:
         self._transient_status_var.set("Checking for updates...")
