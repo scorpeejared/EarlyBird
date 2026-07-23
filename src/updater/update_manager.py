@@ -58,6 +58,7 @@ class UpdateManager:
         self._thread: threading.Thread | None = None
         self._already_notified_tag: str | None = None
         self.latest_known_release: ReleaseInfo | None = None
+        self.last_update_log_path: Path | None = None
 
     # ---------- lifecycle ----------
 
@@ -131,17 +132,23 @@ class UpdateManager:
         self,
         release: ReleaseInfo,
         on_progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        """Download the release asset, stage it, launch the detached
-        updater process, and return.
+    ) -> bool:
+        """Download the release asset, stage it, and (on a packaged
+        build) launch the detached updater process.
 
-        Does NOT close the app itself - by design, so the caller (the
-        UI layer) controls exactly when/how the app shuts down (saving
-        window geometry, stopping the scheduler, etc.) using its own
-        existing shutdown path, the same way `App._quit()` already
-        does for a normal close.
+        Returns True if a relaunch was actually staged - i.e. the
+        caller should now proceed to close the app, since something
+        will bring it back. Returns False if this ran against a dev
+        (`python main.py`) checkout: the download/stage still happened
+        and was verified, but there's no installed .exe to swap, so
+        nothing will relaunch the app - the caller must NOT quit in
+        that case, or the app just closes and never comes back.
 
-        Call this, then immediately trigger your normal app-quit flow.
+        Does NOT close the app itself even when it returns True - by
+        design, so the caller (the UI layer) controls exactly when/how
+        the app shuts down (saving window geometry, stopping the
+        scheduler, etc.) using its own existing shutdown path, the
+        same way `App._quit()` already does for a normal close.
         """
         asset = release.pick_asset(self.asset_name_hint)
         if asset is None:
@@ -162,23 +169,42 @@ class UpdateManager:
                 stage_dir,
             )
             self._report(f"Update downloaded to {stage_dir} (dev mode: not auto-installed)")
-            return
+            return False
 
         current_exe = installer.get_current_exe_path()
         install_dir = installer.get_install_dir()
         staged_exe = installer.find_staged_exe(stage_dir, preferred_name=current_exe.name)
 
+        # A onedir build's actual application code lives in _internal/,
+        # not in the thin exe stub - if the release asset was just the
+        # bare .exe (not a .zip of the whole onedir folder), swapping
+        # only the exe leaves the OLD _internal/ in place, so the app
+        # silently keeps running the old version with no error anywhere.
+        installed_has_internal = (install_dir / "_internal").is_dir()
+        staged_has_internal = (stage_dir / "_internal").is_dir()
+        if installed_has_internal and not staged_has_internal:
+            raise RuntimeError(
+                "This is a onedir build (it has an _internal/ folder), but the "
+                f"downloaded release asset '{asset.name}' only contained a bare "
+                ".exe with no _internal/ folder. The release asset needs to be a "
+                ".zip of the whole dist/EarlyBird/ folder (exe + _internal/), not "
+                "just the .exe by itself - otherwise the app's actual code never "
+                "gets updated even though the launcher exe does."
+            )
+
         # The staged folder should relaunch via the *new* exe, at the
         # same filename/location the current one lives at.
         relaunch_target = install_dir / current_exe.name if staged_exe.name == current_exe.name else staged_exe
 
-        updater_launcher.launch(
+        log_path = updater_launcher.launch(
             stage_dir=stage_dir,
             install_dir=install_dir,
             relaunch_exe=relaunch_target,
             updates_root=downloader.staging_dir(),
         )
+        self.last_update_log_path = log_path
         self._report("Update staged - restarting...")
+        return True
 
     def _report(self, message: str) -> None:
         logger.info(message)

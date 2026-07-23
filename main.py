@@ -914,7 +914,7 @@ class UpdateToast(tk.Toplevel):
         self.configure(bg=COLORS["border"])  # 1px "border" via padding trick below
         self.attributes("-topmost", True)
 
-        width, height = 360, 280
+        width, height = 380, 340
         self.geometry(f"{width}x{height}")
         self.update_idletasks()
         screen_w = self.winfo_screenwidth()
@@ -926,7 +926,7 @@ class UpdateToast(tk.Toplevel):
         card.pack(fill="both", expand=True, padx=1, pady=1)
 
         header = tk.Frame(card, bg=COLORS["surface"])
-        header.pack(fill="x", padx=16, pady=(14, 6))
+        header.pack(side="top", fill="x", padx=16, pady=(14, 6))
         tk.Label(
             header, text="🐦 EarlyBird Update Available",
             bg=COLORS["surface"], fg=COLORS["text"], font=FONTS["body_bold"],
@@ -941,28 +941,18 @@ class UpdateToast(tk.Toplevel):
             card,
             text=f"Version {release.tag} is available (you have {current_version}).",
             bg=COLORS["surface"], fg=COLORS["text"], font=FONTS["small"],
-            wraplength=328, justify="left",
-        ).pack(fill="x", padx=16, anchor="w")
+            wraplength=348, justify="left",
+        ).pack(side="top", fill="x", padx=16, anchor="w")
 
-        notes_frame = tk.Frame(card, bg=COLORS["bg"])
-        notes_frame.pack(fill="both", expand=True, padx=16, pady=(10, 10))
-        notes_text = (release.notes or "No release notes provided.").strip()
-        notes = tk.Text(
-            notes_frame, bg=COLORS["bg"], fg=COLORS["text_secondary"], font=FONTS["small"],
-            wrap="word", relief="flat", borderwidth=0, height=8, padx=8, pady=8,
-        )
-        notes.insert("1.0", notes_text)
-        notes.configure(state="disabled")
-        notes.pack(fill="both", expand=True)
-
-        self._status_var = tk.StringVar(value="")
-        tk.Label(
-            card, textvariable=self._status_var, bg=COLORS["surface"],
-            fg=COLORS["text_secondary"], font=FONTS["small"],
-        ).pack(fill="x", padx=16, anchor="w")
-
+        # Footer and status are packed with side="bottom" *before* the
+        # notes area below, so they're always reserved space at the
+        # bottom of the fixed-size window regardless of how long the
+        # release notes are. Packing them last (side="top", like the
+        # notes area) is what silently pushed the buttons outside the
+        # visible window when notes were long - fixed-size Toplevels
+        # don't grow to fit content, they just clip whatever doesn't fit.
         footer = tk.Frame(card, bg=COLORS["surface"])
-        footer.pack(fill="x", padx=16, pady=(4, 14))
+        footer.pack(side="bottom", fill="x", padx=16, pady=(4, 14))
         self._restart_btn = RoundedButton(
             footer, text="Restart & Update", kind="primary", command=self._restart,
         )
@@ -971,6 +961,23 @@ class UpdateToast(tk.Toplevel):
             footer, text="Later", kind="ghost", command=self._later,
         )
         self._later_btn.pack(side="right", padx=(0, 8))
+
+        self._status_var = tk.StringVar(value="")
+        tk.Label(
+            card, textvariable=self._status_var, bg=COLORS["surface"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        ).pack(side="bottom", fill="x", padx=16, anchor="w")
+
+        notes_frame = tk.Frame(card, bg=COLORS["bg"])
+        notes_frame.pack(side="top", fill="both", expand=True, padx=16, pady=(10, 10))
+        notes_text = (release.notes or "No release notes provided.").strip()
+        notes = tk.Text(
+            notes_frame, bg=COLORS["bg"], fg=COLORS["text_secondary"], font=FONTS["small"],
+            wrap="word", relief="flat", borderwidth=0, padx=8, pady=8,
+        )
+        notes.insert("1.0", notes_text)
+        notes.configure(state="disabled")
+        notes.pack(fill="both", expand=True)
 
     def set_installing(self) -> None:
         self._status_var.set("Downloading and preparing update...")
@@ -1123,6 +1130,31 @@ class App(tk.Tk):
             fg=COLORS["text_secondary"], font=FONTS["small"],
         )
         self._last_checked_label.pack(side="right")
+        tk.Label(
+            status_inner, text=f"v{APP_VERSION}", bg=COLORS["primary_soft"],
+            fg=COLORS["text_secondary"], font=FONTS["small"],
+        ).pack(side="right", padx=(0, 14))
+        check_now = tk.Label(
+            status_inner, text="Check for updates", bg=COLORS["primary_soft"],
+            fg=COLORS["primary"], font=FONTS["small"], cursor="hand2",
+        )
+        check_now.pack(side="right", padx=(0, 14))
+        check_now.bind("<Button-1>", lambda e: self._check_for_updates_now())
+
+    def _check_for_updates_now(self) -> None:
+        self._transient_status_var.set("Checking for updates...")
+
+        def worker():
+            result = self.update_manager.check_for_updates()
+            if not result.update_available:
+                self.after(0, lambda: self._transient_status_var.set(
+                    f"Up to date (v{APP_VERSION})"
+                ))
+            # If an update *is* available, check_for_updates() already
+            # triggers on_update_available -> the toast, same as the
+            # automatic background check does.
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---------- dashboard ----------
 
@@ -1374,7 +1406,7 @@ class App(tk.Tk):
         already waiting on its PID to do the file swap and relaunch."""
         def worker():
             try:
-                self.update_manager.download_and_install(release)
+                will_relaunch = self.update_manager.download_and_install(release)
             except Exception as e:
                 logging.getLogger("meet_automation").exception("Update install failed")
                 self.after(0, lambda: messagebox.showerror(
@@ -1382,7 +1414,23 @@ class App(tk.Tk):
                     f"Couldn't install the update:\n{e}\n\nEarlyBird will keep running normally.",
                 ))
                 return
-            self.after(0, self._quit)
+
+            if will_relaunch:
+                self.after(0, self._quit)
+            else:
+                # Dev-mode run (`python main.py`, not a packaged .exe) -
+                # the download was verified but there's nothing to swap
+                # in place, so do NOT quit (nothing would bring it back).
+                self.after(0, lambda: messagebox.showinfo(
+                    "Downloaded (dev mode)",
+                    f"Update {release.tag} downloaded and verified successfully.\n\n"
+                    "This is a 'python main.py' run, not a packaged .exe, so there's "
+                    "no installed build to swap in place - EarlyBird will keep running "
+                    "on the current version. Build/run the packaged .exe to test the "
+                    "actual restart-and-replace flow.",
+                ))
+                if self._update_toast and self._update_toast.winfo_exists():
+                    self._update_toast.destroy()
 
         if self._update_toast and self._update_toast.winfo_exists():
             self._update_toast.set_installing()

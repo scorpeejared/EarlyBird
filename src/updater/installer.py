@@ -72,11 +72,30 @@ def stage_update(downloaded_path: Path) -> Path:
                 zf.extractall(stage_dir)
         except zipfile.BadZipFile as e:
             raise InstallError(f"Downloaded update archive is corrupt ({e})") from e
+        _flatten_single_wrapper_folder(stage_dir)
     else:
         shutil.copy2(downloaded_path, stage_dir / downloaded_path.name)
 
     logger.info("Staged update at %s", stage_dir)
     return stage_dir
+
+
+def _flatten_single_wrapper_folder(stage_dir: Path) -> None:
+    """If the zip's only top-level entry is itself a folder (e.g. it
+    was zipped by right-clicking `dist/EarlyBird/` rather than zipping
+    its *contents*), move that folder's contents up one level.
+
+    Without this, the updater script's top-level swap (exe + _internal)
+    would look for those names directly under `stage_dir` and find
+    nothing there - it'd see one folder named e.g. "EarlyBird" instead.
+    """
+    entries = list(stage_dir.iterdir())
+    if len(entries) == 1 and entries[0].is_dir():
+        wrapper = entries[0]
+        for child in list(wrapper.iterdir()):
+            shutil.move(str(child), str(stage_dir / child.name))
+        wrapper.rmdir()
+        logger.info("Flattened wrapper folder '%s' from the update archive", wrapper.name)
 
 
 def find_staged_exe(stage_dir: Path, preferred_name: str | None = None) -> Path:
