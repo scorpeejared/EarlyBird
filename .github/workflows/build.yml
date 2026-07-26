@@ -37,7 +37,7 @@ jobs:
           }
 
       - name: Build with PyInstaller
-        run: pyinstaller EarlyBird.spec
+        run: pyinstaller --onedir --windowed --name EarlyBird --clean main.py
 
       - name: Package release zip
         shell: pwsh
