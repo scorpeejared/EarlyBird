@@ -40,6 +40,7 @@ jobs:
         run: pyinstaller --onedir --windowed --name EarlyBird --clean main.py
 
       - name: Package release zip
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $zipName = "EarlyBird-${{ github.ref_name }}-windows.zip"
@@ -60,5 +61,8 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          # Upload the raw build output, not a pre-zipped file - Actions
+          # always wraps artifact contents in its own zip on download, so
+          # zipping first here would give downloaders a zip-inside-a-zip.
+          name: EarlyBird-${{ github.ref_name }}-windows
+          path: dist/EarlyBird/*

@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
-from qfluentwidgets import BodyLabel, CardWidget, CaptionLabel, FluentIcon, TransparentToolButton, isDarkTheme
+from qfluentwidgets import CardWidget, CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton, isDarkTheme
 
 from src.models import Meeting
 
@@ -48,8 +48,7 @@ class MeetingCard(CardWidget):
 
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        title_label = BodyLabel(meeting.title, self)
-        title_label.setStyleSheet("font-weight: 600;")
+        title_label = StrongBodyLabel(meeting.title, self)
         title_row.addWidget(title_label)
         text, fg, bg = _status_badge_spec(meeting)
         title_row.addWidget(make_badge(text, fg, bg, self))
@@ -64,7 +63,7 @@ class MeetingCard(CardWidget):
         left.addWidget(meta_label)
 
         link_label = CaptionLabel(meeting.link, self)
-        link_label.setTextColor("#9CA3AF", "#6B7280")
+        link_label.setTextColor("#6B7280", "#9CA3AF")
         left.addWidget(link_label)
 
         root.addLayout(left, 1)
