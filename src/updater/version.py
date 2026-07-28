@@ -8,7 +8,7 @@ string is the entire release checklist on the version side.
 """
 from __future__ import annotations
 
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 
 def parse(version_string: str) -> tuple[int, ...]:
