@@ -14,10 +14,15 @@ from typing import Optional
 from models import Meeting
 import recurrence
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:  # imported as `src.storage`
+    from . import paths
+except ImportError:  # imported flat, with src/ on sys.path
+    import paths
 
-DB_PATH = DATA_DIR / "meetings.db"
+# Resolved by paths.py, which keeps the database out of PyInstaller's
+# temp extraction folder - see that module for why.
+DATA_DIR = paths.DATA_DIR
+DB_PATH = paths.DB_PATH
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meetings (
@@ -53,6 +58,9 @@ class MeetingStore:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self._lock = threading.Lock()
+        # sqlite3.connect() creates the file but not its parent folder,
+        # so make sure the folder is there before the first connection.
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_SCHEMA)
             self._migrate(conn)
@@ -180,3 +188,14 @@ class MeetingStore:
             chrome_connection=row["chrome_connection"],
             join_early_minutes=row["join_early_minutes"] if "join_early_minutes" in keys else 0,
         )
+
+
+def ensure_database(db_path: Path = DB_PATH) -> Path:
+    """Create data/meetings.db (and its schema) if it doesn't exist yet.
+
+    The app would create it lazily anyway on the first MeetingStore(),
+    but doing it at startup means the data folder is fully populated the
+    moment the app opens, whether or not anything has been saved yet.
+    """
+    MeetingStore(db_path)
+    return db_path

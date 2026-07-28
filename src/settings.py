@@ -17,10 +17,15 @@ a handful of global values read on every join attempt, not per-meeting data.
 import json
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:  # imported as `src.settings`
+    from . import paths
+except ImportError:  # imported flat, with src/ on sys.path
+    import paths
 
-SETTINGS_PATH = DATA_DIR / "settings.json"
+# Both resolved by paths.py, which keeps user data out of PyInstaller's
+# temp extraction folder - see that module for why.
+DATA_DIR = paths.DATA_DIR
+SETTINGS_PATH = paths.SETTINGS_PATH
 
 _DEFAULTS = {
     "connections": [],
@@ -37,7 +42,15 @@ ISOLATED_PROFILE_LABEL = "App's own isolated profile (default)"
 
 
 def ensure_data_dir() -> Path:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    """Create the data folder and seed settings.json if it isn't there.
+
+    Writing the defaults out on first run (rather than only when the
+    user changes something) means the file always exists to look at or
+    hand-edit, and makes it obvious where the app is keeping its state.
+    """
+    paths.ensure_dirs()
+    if not SETTINGS_PATH.exists():
+        _write(dict(_DEFAULTS))
     return DATA_DIR
 
 
@@ -54,6 +67,9 @@ def load() -> dict:
 
 
 def _write(full: dict) -> None:
+    # mkdir here too: a save can be the very first thing that touches
+    # disk (e.g. saving window geometry) if the folder was removed.
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(full, indent=2))
 
 

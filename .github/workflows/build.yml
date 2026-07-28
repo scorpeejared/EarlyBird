@@ -37,32 +37,30 @@ jobs:
           }
 
       - name: Build with PyInstaller
-        run: pyinstaller --onedir --windowed --name EarlyBird --clean main.py
-
-      - name: Package release zip
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          $zipName = "EarlyBird-${{ github.ref_name }}-windows.zip"
-          # Zip the *contents* of dist/EarlyBird (exe + _internal at the zip
-          # root) - installer.py's staging step expects those to be found
-          # directly at the archive root, not nested one level down.
-          Compress-Archive -Path "dist/EarlyBird/*" -DestinationPath $zipName
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+        run: pyinstaller --onefile --windowed --name EarlyBird --clean main.py
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ZIP_NAME }}
+          # A onefile build is a single self-contained .exe, so it ships
+          # unzipped - installer.stage_update() takes a raw executable
+          # asset directly, and skipping the archive means one less step
+          # between the download and the file swap.
+          #
+          # The asset filename must stay exactly "EarlyBird.exe" (no
+          # version in it): update_manager decides what to relaunch by
+          # matching the staged exe's name against the running one, so a
+          # differently-named asset would land *beside* the installed exe
+          # instead of replacing it, leaving the user on the old version.
+          files: dist/EarlyBird.exe
           generate_release_notes: true
 
       - name: Upload build artifact
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          # Upload the raw build output, not a pre-zipped file - Actions
-          # always wraps artifact contents in its own zip on download, so
-          # zipping first here would give downloaders a zip-inside-a-zip.
+          # Actions always wraps artifact contents in its own zip on
+          # download, so nothing is pre-zipped here either.
           name: EarlyBird-${{ github.ref_name }}-windows
-          path: dist/EarlyBird/*
+          path: dist/EarlyBird.exe

@@ -26,19 +26,21 @@ Windows-only. Requires pywinauto (and its pywin32 dependency).
 from __future__ import annotations
 
 import logging
-import sys
 import os
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).resolve().parent.parent
+try:  # imported as `src.automation_uia`
+    from . import paths
+except ImportError:  # imported flat, with src/ on sys.path
+    import paths
 
-LOG_DIR = BASE_DIR / "logs"
+# Was next to the .exe when frozen, which fails outright if the app is
+# installed somewhere the user can't write to (Program Files); paths.py
+# puts it in the per-user app-data folder instead.
+BASE_DIR = paths.APP_DIR
+LOG_DIR = paths.LOG_DIR
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(

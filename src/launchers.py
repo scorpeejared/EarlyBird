@@ -9,27 +9,18 @@ your taskbar/dock for convenience) instead of your normal Chrome icon;
 after that, use Chrome completely normally until you reboot.
 """
 import stat
-import sys
 from pathlib import Path
 
-# Determine where to store generated launcher scripts.
-# When frozen with PyInstaller, __file__ points to a temporary, often 
-# read-only directory. We must use a user-writable directory to avoid 
-# FileNotFoundError or PermissionError.
-if getattr(sys, 'frozen', False):
-    # Running as a compiled executable (.exe)
-    if sys.platform == "win32":
-        BASE_DIR = Path.home() / "AppData" / "Local" / "EarlyBird"
-    elif sys.platform == "darwin":
-        BASE_DIR = Path.home() / "Library" / "Application Support" / "EarlyBird"
-    else:
-        BASE_DIR = Path.home() / ".local" / "share" / "EarlyBird"
-else:
-    # Running in development (keeps the original src/launchers behavior)
-    BASE_DIR = Path(__file__).parent
+try:  # imported as `src.launchers`
+    from . import paths
+except ImportError:  # imported flat, with src/ on sys.path
+    import paths
 
-LAUNCHER_DIR = BASE_DIR / "launchers"
-# parents=True ensures the "EarlyBird" folder is created if it doesn't exist
+# Generated scripts have to go somewhere user-writable: when frozen,
+# __file__ points into PyInstaller's temp extraction folder, which is
+# wiped on exit (and can be read-only). paths.py resolves that.
+BASE_DIR = paths.APP_DIR
+LAUNCHER_DIR = paths.LAUNCHER_DIR
 LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
 
 CHROME_EXE_WINDOWS = r"C:\Program Files\Google\Chrome\Application\chrome.exe"

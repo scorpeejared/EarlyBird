@@ -1,21 +1,26 @@
 """Settings page: app version, update checks, and background behavior."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
 from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
     FluentIcon,
     HyperlinkButton,
+    MessageBox,
     PrimaryPushButton,
     PushButton,
     RadioButton,
+    ScrollArea,
     StrongBodyLabel,
     SubtitleLabel,
     TransparentPushButton,
 )
+
+from src import paths
 
 from .. import theme
 
@@ -51,6 +56,22 @@ class SettingsPage(QWidget):
         root.setSpacing(14)
         root.addWidget(SubtitleLabel("Settings", self))
 
+        # The cards go in a scroll area rather than straight into `root`.
+        # The window is a fixed 900x600, so once the cards total more than
+        # that, QVBoxLayout shrinks every child below its minimum instead
+        # of overflowing - which silently squashes the buttons down to a
+        # few pixels tall rather than showing a scrollbar. Same pattern
+        # (and same setWidget/enableTransparentBackground ordering) as
+        # HomePage's meeting list.
+        self.scroll_area = ScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+
+        content = QWidget(self.scroll_area)
+        cards = QVBoxLayout(content)
+        cards.setContentsMargins(0, 0, 4, 0)  # right margin clears the scrollbar
+        cards.setSpacing(14)
+
         version_card = CardWidget(self)
         version_card.setBorderRadius(theme.CARD_RADIUS)
         v_layout = QVBoxLayout(version_card)
@@ -85,18 +106,19 @@ class SettingsPage(QWidget):
 
         link_btn = HyperlinkButton(REPO_URL, "View project on GitHub", version_card, FluentIcon.GITHUB)
         v_layout.addWidget(link_btn)
-        root.addWidget(version_card)
+        cards.addWidget(version_card)
 
-        root.addWidget(self._build_personalization_card(theme_mode))
+        cards.addWidget(self._build_personalization_card(theme_mode))
+        cards.addWidget(self._build_data_card())
 
-        root.addWidget(_section(
+        cards.addWidget(_section(
             "Running in the background",
             "Closing the window offers to minimize EarlyBird to the system tray so it "
             "keeps auto-joining classes quietly. Choose to quit instead from that prompt, "
             "or right-click the tray icon at any time.",
         ))
 
-        root.addWidget(_section(
+        cards.addWidget(_section(
             "About auto-join",
             "When a class is due, EarlyBird opens (or attaches to) Chrome, joins the "
             "Google Meet link, and mutes the microphone and camera according to each "
@@ -104,7 +126,11 @@ class SettingsPage(QWidget):
             "Connections page.",
         ))
 
-        root.addStretch(1)
+        cards.addStretch(1)
+
+        self.scroll_area.setWidget(content)
+        self.scroll_area.enableTransparentBackground()
+        root.addWidget(self.scroll_area, 1)
 
     def _build_personalization_card(self, theme_mode: str) -> CardWidget:
         card = CardWidget(self)
@@ -138,6 +164,49 @@ class SettingsPage(QWidget):
         self._auto_radio.toggled.connect(lambda checked: checked and self.themeModeChanged.emit("auto"))
 
         return card
+
+    def _build_data_card(self) -> CardWidget:
+        card = CardWidget(self)
+        card.setBorderRadius(theme.CARD_RADIUS)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
+        layout.addWidget(StrongBodyLabel("App data", card))
+
+        caption = CaptionLabel(
+            "Your classes and settings live outside the app itself, so moving "
+            "EarlyBird or installing an update never touches them.",
+            card,
+        )
+        caption.setWordWrap(True)
+        caption.setTextColor("#6B7280", "#9CA3AF")
+        layout.addWidget(caption)
+
+        # Spelled out rather than hidden behind the button alone: on
+        # Windows this sits under AppData, which is hidden by default and
+        # effectively unfindable by browsing. Selectable so it can be
+        # copied into an Explorer address bar or a bug report.
+        path_label = CaptionLabel(str(paths.DATA_DIR), card)
+        path_label.setWordWrap(True)
+        path_label.setTextColor("#6B7280", "#9CA3AF")
+        path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(path_label)
+
+        button_row = QHBoxLayout()
+        open_btn = PushButton(FluentIcon.FOLDER, "Open data folder", card)
+        open_btn.clicked.connect(self._open_data_folder)
+        button_row.addWidget(open_btn)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+        return card
+
+    def _open_data_folder(self) -> None:
+        # Recreate first: the folder is normally made at startup, but the
+        # user may have deleted it since, and opening a missing path just
+        # fails silently with no hint as to why.
+        paths.ensure_dirs()
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.DATA_DIR))):
+            MessageBox("Data folder", str(paths.DATA_DIR), self.window()).exec()
 
     def set_status(self, text: str) -> None:
         """Plain status text (e.g. 'Checking for updates...', scheduler

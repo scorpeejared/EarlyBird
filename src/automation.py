@@ -26,9 +26,17 @@ from playwright.sync_api import (
     TimeoutError as PWTimeoutError,
 )
 
-LOG_DIR = Path(__file__).parent.parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
-PROFILE_DIR = Path(__file__).parent.parent.parent / "chrome_profile"
+try:  # imported as `src.automation`
+    from . import paths
+except ImportError:  # imported flat, with src/ on sys.path
+    import paths
+
+# Both from paths.py so logs and the Chrome profile survive a restart of
+# a packaged build (and, previously, so they stop landing one directory
+# *above* the project root when running from source).
+LOG_DIR = paths.LOG_DIR
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+PROFILE_DIR = paths.PROFILE_DIR
 
 logging.basicConfig(
     filename=LOG_DIR / "automation.log",
