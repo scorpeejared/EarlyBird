@@ -16,7 +16,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
-from src import automation_uia
+from ... import automation_uia, cdp_probe
 
 
 def _hint(text: str) -> CaptionLabel:
@@ -151,8 +151,6 @@ class ConnectionAddEditDialog(MessageBoxBase):
         ).exec()
 
     def _on_test_port(self) -> None:
-        from src import cdp_probe
-
         try:
             port = int(self.port_edit.text())
         except ValueError:
@@ -178,13 +176,13 @@ class ConnectionAddEditDialog(MessageBoxBase):
             self.result = {
                 "name": name,
                 "backend": "uia",
-                "profile_directory": automation_uia._normalize_profile_directory(
+                "profile_directory": automation_uia.normalize_profile_directory(
                     self.uia_profile_edit.text()
                 ),
                 "title_hint": self.title_hint_edit.text().strip(),
             }
         else:
-            profile_directory = automation_uia._normalize_profile_directory(
+            profile_directory = automation_uia.normalize_profile_directory(
                 self.cdp_profile_edit.text()
             )
             if not profile_directory:

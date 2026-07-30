@@ -1,23 +1,15 @@
 """
-Browser automation for auto-joining Google Meet calls.
+Playwright browser automation for auto-joining Google Meet calls.
 
-Design choices (see README for the full reasoning):
-- Playwright, not Selenium/PyAutoGUI: best selector engine, built-in waits,
-  and it can grant camera/mic permissions at the API level so Chrome never
-  shows a permission popup in the first place.
-- channel="chrome" + a persistent user_data_dir: reuses your real, installed
-  Chrome and keeps you logged into Google between runs, so there's no
-  sign-in step to automate.
-- Every interaction is selector-based (accessible role + name), never a
-  fixed pixel coordinate, so it keeps working across screen resolutions,
-  window sizes, and minor Meet redesigns.
+Used for the isolated profile and for "debug port" (CDP) connections;
+Windows UI Automation handles the rest, in automation_uia.py.
+
+Every interaction is selector-based (accessible role + name) rather than
+a pixel coordinate, so it survives resolution changes and Meet redesigns.
 """
 from __future__ import annotations
 
-import logging
 import time
-from dataclasses import dataclass
-from pathlib import Path
 
 from playwright.sync_api import (
     sync_playwright,
@@ -26,36 +18,16 @@ from playwright.sync_api import (
     TimeoutError as PWTimeoutError,
 )
 
-try:  # imported as `src.automation`
-    from . import paths
-except ImportError:  # imported flat, with src/ on sys.path
-    import paths
+from . import paths
+from .logging_setup import get_logger
+from .models import JoinResult
 
-# Both from paths.py so logs and the Chrome profile survive a restart of
-# a packaged build (and, previously, so they stop landing one directory
-# *above* the project root when running from source).
 LOG_DIR = paths.LOG_DIR
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_DIR = paths.PROFILE_DIR
 
-logging.basicConfig(
-    filename=LOG_DIR / "automation.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("meet_automation")
+logger = get_logger()
 
-
-@dataclass
-class JoinResult:
-    success: bool
-    message: str
-    screenshot_path: str | None = None
-
-
-# Accessible names Google Meet has used for these controls. Kept as a list
-# because Google occasionally A/B tests slightly different label wording -
-# trying several candidates is more robust than hardcoding one string.
+# Lists, because Google occasionally A/B tests different label wording.
 MIC_OFF_LABELS = ["Turn off microphone"]
 CAM_OFF_LABELS = ["Turn off camera"]
 JOIN_LABELS = ["Join now", "Ask to join"]
@@ -63,12 +35,7 @@ DISMISS_LABELS = ["Got it", "Dismiss", "Close", "No thanks"]
 
 
 def _try_click_by_role(page: Page, role: str, names: list[str], timeout_ms: int = 4000) -> bool:
-    """Try clicking the first matching accessible-role/name control.
-
-    This is the reliability workhorse: instead of page.click(x, y) we ask
-    the browser's accessibility tree for "the button named X", which is
-    stable across resolutions, zoom levels, and most redesigns.
-    """
+    """Click the first control matching any of these accessible names."""
     for name in names:
         try:
             locator = page.get_by_role(role, name=name, exact=False)
@@ -94,14 +61,11 @@ def _run_join_flow(
     nav_timeout_s: int,
     control_timeout_s: int,
 ) -> JoinResult:
-    """The actual on-page steps, shared by both launch modes below:
-    navigate, dismiss popups, mute mic/camera, click Join."""
+    """The on-page steps shared by both launch modes: navigate, dismiss
+    popups, mute mic/camera, click Join."""
     logger.info(f"Navigating to {link}")
     page.goto(link, wait_until="domcontentloaded", timeout=nav_timeout_s * 1000)
 
-    # Give the SPA a moment to render the join-preview screen, then wait
-    # specifically for a control we expect, rather than a blind sleep -
-    # this is the "wait for load" step done properly.
     page.wait_for_load_state("networkidle", timeout=nav_timeout_s * 1000)
     _dismiss_popups(page)
 
@@ -159,7 +123,6 @@ def join_google_meet(
                         ),
                     )
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
-                # Permissions can still be granted on an already-open context.
                 try:
                     context.grant_permissions(["camera", "microphone"])
                 except Exception:  # noqa: BLE001 - some Chrome builds restrict this; not fatal
@@ -168,11 +131,9 @@ def join_google_meet(
                 page = context.new_page()
                 page.set_default_timeout(control_timeout_s * 1000)
                 page.bring_to_front()
-                # Deliberately do NOT close other pages here - unlike the
-                # launch modes below, this is the user's live, everyday
-                # browser session, full of their own tabs we must not touch.
-                result = _run_join_flow(page, link, mute_mic, mute_camera, nav_timeout_s, control_timeout_s)
-                return result
+                # Other pages stay open here: this is the user's own
+                # browser session, full of their tabs.
+                return _run_join_flow(page, link, mute_mic, mute_camera, nav_timeout_s, control_timeout_s)
 
             # --- Launch modes (isolated profile or a real profile folder) ---
             resolved_dir = user_data_dir or str(PROFILE_DIR)

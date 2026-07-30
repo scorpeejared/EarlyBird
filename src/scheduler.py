@@ -9,19 +9,15 @@ loop or the GUI.
 """
 from __future__ import annotations
 
-import logging
 import threading
-import time
 from datetime import datetime
 
-from .storage import MeetingStore
+from . import automation, automation_uia, notifier, recurrence, settings
+from .logging_setup import get_logger
 from .models import Meeting
-from . import automation
-from . import automation_uia
-from . import notifier
-from . import recurrence
-from . import settings
-logger = logging.getLogger("meet_automation")
+from .storage import MeetingStore
+
+logger = get_logger()
 
 POLL_INTERVAL_SECONDS = 15
 NOTIFY_LEAD_SECONDS = 5 * 60  # notify 5 minutes before a meeting
@@ -72,10 +68,9 @@ class SchedulerService:
             self.store.update(m)
             self._report(f"Notified about '{m.title}'")
 
-        # 2. Meetings due right now (skip any that already have a join
-        # attempt in flight - without this guard, a join that takes longer
-        # than one poll interval gets launched a second time, and the two
-        # Chrome instances collide on the same profile lock).
+        # 2. Meetings due right now. Skip any join already in flight: one
+        # that outlasts a poll interval would otherwise be launched twice,
+        # and the two Chrome instances collide on the same profile lock.
         for m in self.store.due_meetings(now):
             with self._joining_lock:
                 if m.id in self._joining_ids:

@@ -20,7 +20,7 @@ from qfluentwidgets import (
     TransparentPushButton,
 )
 
-from src import paths
+from ... import paths
 
 from .. import theme
 
@@ -56,13 +56,9 @@ class SettingsPage(QWidget):
         root.setSpacing(14)
         root.addWidget(SubtitleLabel("Settings", self))
 
-        # The cards go in a scroll area rather than straight into `root`.
-        # The window is a fixed 900x600, so once the cards total more than
-        # that, QVBoxLayout shrinks every child below its minimum instead
-        # of overflowing - which silently squashes the buttons down to a
-        # few pixels tall rather than showing a scrollbar. Same pattern
-        # (and same setWidget/enableTransparentBackground ordering) as
-        # HomePage's meeting list.
+        # The cards need a scroll area, not `root` directly: the window is
+        # a fixed 900x600, and once the cards exceed that, QVBoxLayout
+        # squashes them below their minimum instead of scrolling.
         self.scroll_area = ScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
@@ -88,10 +84,8 @@ class SettingsPage(QWidget):
         self._check_btn.clicked.connect(self.checkForUpdatesClicked)
         v_layout.addWidget(self._check_btn)
 
-        # Inline "an update is ready" prompt - hidden until an update is
-        # actually found, then replaces the "Check for updates" button
-        # so the settings page itself asks "update now or later?"
-        # instead of only relying on the corner toast.
+        # Hidden until an update is found, then replaces the "Check for
+        # updates" button so the page itself asks "now or later?".
         update_row = QHBoxLayout()
         self._update_now_btn = PrimaryPushButton("Update now", version_card)
         self._update_now_btn.clicked.connect(self.updateNowClicked)
@@ -182,10 +176,8 @@ class SettingsPage(QWidget):
         caption.setTextColor("#6B7280", "#9CA3AF")
         layout.addWidget(caption)
 
-        # Spelled out rather than hidden behind the button alone: on
-        # Windows this sits under AppData, which is hidden by default and
-        # effectively unfindable by browsing. Selectable so it can be
-        # copied into an Explorer address bar or a bug report.
+        # Spelled out and selectable: on Windows this lives under AppData,
+        # which is hidden by default and unfindable by browsing.
         path_label = CaptionLabel(str(paths.DATA_DIR), card)
         path_label.setWordWrap(True)
         path_label.setTextColor("#6B7280", "#9CA3AF")
@@ -201,25 +193,21 @@ class SettingsPage(QWidget):
         return card
 
     def _open_data_folder(self) -> None:
-        # Recreate first: the folder is normally made at startup, but the
-        # user may have deleted it since, and opening a missing path just
-        # fails silently with no hint as to why.
+        # Recreate first: opening a folder deleted since startup fails
+        # silently, with no hint as to why.
         paths.ensure_dirs()
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.DATA_DIR))):
             MessageBox("Data folder", str(paths.DATA_DIR), self.window()).exec()
 
     def set_status(self, text: str) -> None:
-        """Plain status text (e.g. 'Checking for updates...', scheduler
-        messages). Always safe to call - it does not touch the
-        update-now/later buttons, so callers don't need to know whether
-        an update prompt is currently showing."""
+        """Plain status text. Leaves the update-now/later buttons alone,
+        so callers don't need to know if an update prompt is showing."""
         self.status_label.setTextFormat(Qt.PlainText)
         self.status_label.setText(text)
 
     def show_update_available(self, tag: str, html_url: str) -> None:
-        """Switch the version card into 'an update is ready' mode: the
-        status line becomes a link to the release and the plain 'Check
-        for updates' button is replaced by 'Update now' / 'Later'."""
+        """Switch the version card into 'update ready' mode: status line
+        links to the release, 'Check' becomes 'Update now' / 'Later'."""
         self.status_label.setTextFormat(Qt.RichText)
         self.status_label.setText(
             f"{theme.link_html(html_url, tag)} is available - update now or later?"
@@ -229,8 +217,7 @@ class SettingsPage(QWidget):
         self._update_later_btn.show()
 
     def clear_update_available(self) -> None:
-        """Revert to the normal 'Check for updates' button, e.g. after
-        the user picks Later, or once an update starts installing."""
+        """Revert to the plain 'Check for updates' button."""
         self._update_now_btn.hide()
         self._update_later_btn.hide()
         self._check_btn.show()

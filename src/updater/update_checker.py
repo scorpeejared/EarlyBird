@@ -1,8 +1,7 @@
 """
-Decides "is the latest GitHub Release actually newer than what's
-installed" - kept separate from github_release.py so the comparison
-logic (and the skipped-version rule) is unit-testable without any
-network access.
+Decides whether the latest GitHub Release is newer than what's
+installed. Separate from github_release.py so the comparison is
+testable without network access.
 """
 from __future__ import annotations
 
@@ -28,15 +27,8 @@ def check(
     current_version: str | None = None,
     skip_prereleases: bool = True,
 ) -> UpdateCheckResult:
-    """Compare `release` (the latest GitHub Release, or None if there
-    isn't one yet) against the installed version.
-
-    `skip_prereleases` exists for the future beta channel: today the
-    stable channel is the only one wired up, and /releases/latest never
-    returns a prerelease anyway, but a beta-channel checker will call
-    this same function against a different release (one that *can* be
-    a prerelease) with skip_prereleases=False.
-    """
+    """Compare `release` (or None, if the repo has no releases yet)
+    against the installed version."""
     current = current_version or version_module.get_installed_version()
 
     if release is None:

@@ -2,7 +2,7 @@
 
 EarlyBird 🐦 is a Python desktop application that automatically joins your scheduled Google Meet classes or meetings. Simply add your meeting link, choose a date and time (or make it recurring), and the application will handle the rest.
 
-Designed for students and professionals, the application uses your own Chrome profile so you remain signed into Google while automatically preparing and joining meetings without requiring manual interaction.
+Designed for students and professionals, it drives a real Chrome profile — its own, or one of yours — so you stay signed into Google while meetings are prepared and joined without any manual interaction.
 
 ---
 
@@ -22,42 +22,28 @@ Designed for students and professionals, the application uses your own Chrome pr
 
 Create repeating schedules similar to the Apple Clock app.
 
-Supported options include:
+Pick any combination of days from Sunday to Saturday, with one-tap **Weekdays** and **Every day** presets — or leave repeat off for a one-time meeting.
 
-* Every Monday
-* Every Tuesday
-* Every Wednesday
-* Every Thursday
-* Every Friday
-* Multiple selected days
-* One-time meetings
-
-After a recurring meeting finishes, the application automatically schedules its next occurrence.
+Once a recurring class has been joined for the day, EarlyBird moves on to its next occurrence automatically.
 
 ---
 
-## Smart Chrome Profile Management
+## Chrome Profile Management
 
-The application uses a dedicated Chrome profile so you only need to sign into Google once.
+Out of the box, EarlyBird joins through its own isolated Chrome profile. Sign into Google in it once and it stays signed in between launches, without touching your everyday browsing session.
 
-It intelligently:
+If you would rather join as one of your existing Chrome profiles, add a **connection** on the Connections page. Two kinds exist:
 
-* Reuses the existing Chrome automation session whenever possible.
-* Opens new meetings using the same signed-in profile.
-* Keeps your Google login between launches.
-* Avoids interfering with your normal browsing session.
+* **No setup (recommended, Windows only).** EarlyBird drives Chrome through Windows UI Automation, the same accessibility API screen readers use. Give it a profile directory name and it launches that profile with the meeting link when the class is due — Chrome can be open or closed beforehand.
+* **Debug port.** EarlyBird attaches over Chrome's remote-debugging port. This needs Chrome started from a generated launcher script rather than your normal icon, and since Chrome 136 the debug port is refused for your real default profile — so this option is mainly useful for a dedicated automation profile.
 
 ---
 
 ## Automatic Meeting Cleanup
 
-If a previous meeting was accidentally left open, the application automatically cleans up the old meeting before joining the next scheduled one.
+Before joining a new meeting, EarlyBird closes the window it opened for that connection's previous meeting, so Meet tabs don't pile up over the day.
 
-This prevents:
-
-* Multiple Google Meet tabs remaining open.
-* Joining two meetings simultaneously.
-* Accumulating unused browser tabs throughout the day.
+It only closes windows it opened itself. If Chrome joined by opening a tab in a window you already had open, that window is left alone.
 
 ---
 
@@ -91,7 +77,7 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/scorpeejared/EarlyBird.git
-cd meet-auto-joiner
+cd EarlyBird
 ```
 
 Create a virtual environment:
@@ -140,42 +126,34 @@ python main.py
 
 ## First-Time Setup
 
-Before using EarlyBird, you need to configure the Chrome profile that will be used to join your meetings.
+EarlyBird works with no setup at all — classes join through its own isolated Chrome profile, and you sign into Google in it the first time a meeting opens.
 
-### Step 1: Open your Chrome profile
+To join as one of your existing Chrome profiles instead, add a connection:
 
-Launch Google Chrome using the profile you normally use for Google Meet (the one that's already signed in to your Google account).
+### Step 1: Find your profile directory name
 
-### Step 2: Find your profile path
-
-In the Chrome address bar, navigate to:
+Open Chrome using the profile you normally use for Google Meet, and go to:
 
 ```text
 chrome://version
 ```
 
-Locate the **Profile Path** field and copy its value.
-
-For example:
+Copy the last folder from the **Profile Path** field — the directory name, not the whole path, and not the display name Chrome shows in its UI:
 
 ```text
 C:\Users\YourName\AppData\Local\Google\Chrome\User Data\Profile 1
+                                                        ^^^^^^^^^
 ```
 
-### Step 3: Configure EarlyBird
+### Step 2: Add the connection
 
-Open EarlyBird and paste the copied **Profile Path** into the Chrome Profile setting.
+In EarlyBird, open **Connections → Add**, give the connection a name, leave the recommended "no manual setup" option selected, and paste `Profile 1` into **Chrome profile directory name**.
 
-### That's it!
+### Step 3: Point a class at it
 
-Once configured, EarlyBird will:
+When adding or editing a class, pick that connection under **Join using**.
 
-* Reuse your existing Chrome profile.
-* Keep you signed in to your Google account.
-* Automatically use the same profile for future meetings.
-* Preserve your existing Chrome settings, cookies, and saved sessions.
-
-> **Note:** Make sure the selected Chrome profile is already signed in to the Google account you want to use for joining meetings.
+> **Note:** Make sure that Chrome profile is already signed in to the Google account you want to join meetings with.
 
 ---
 
@@ -200,32 +178,34 @@ The application will automatically handle the meeting when its scheduled time ar
 
 ```text
 .
-├── main.py                  # Entry point (runs the app)
-├── requirements.txt         # Python dependencies
+├── main.py                   # Entry point: bootstrap, then the window
+├── requirements.txt          # Python dependencies
 │
-├── data/                    # User-specific data (gitignored)
-│   ├── meetings.db          # SQLite database
-│   └── settings.json        # App settings
+├── data/                     # User data (gitignored)
+│   ├── meetings.db           # SQLite database
+│   └── settings.json         # App settings and Chrome connections
 │
-├── logs/                    # Log files (gitignored)
+├── logs/                     # Log files (gitignored)
 │   └── automation.log
 │
-└── src/                     # Application source code
-    ├── models.py            # Data models (Meeting class)
-    ├── storage.py           # Database operations
-    ├── settings.py          # Configuration management
-    ├── scheduler.py         # Background scheduling engine
-    ├── notifier.py          # Desktop notifications
-    ├── recurrence.py        # Recurring meeting calculations
-    ├── launchers.py         # Chrome launcher script generator
+└── src/                      # Application source code
+    ├── paths.py              # Where everything the app writes lives
+    ├── logging_setup.py      # Shared logger name and log file
+    ├── models.py             # Meeting and JoinResult
+    ├── storage.py            # Database operations
+    ├── settings.py           # Settings and Chrome connections
+    ├── scheduler.py          # Background scheduling engine
+    ├── notifier.py           # Desktop notifications
+    ├── recurrence.py         # Recurring meeting calculations
+    ├── launchers.py          # Chrome launcher script generator
     │
-    ├── automation.py    # Playwright browser automation
-    ├── automation_uia.py # UI Automation fallback
-    ├── cdp_probe.py     # Chrome DevTools Protocol probing
+    ├── automation.py         # Playwright automation (isolated profile, CDP)
+    ├── automation_uia.py     # Windows UI Automation backend
+    ├── cdp_probe.py          # Chrome DevTools Protocol probing
     │
-    ├── updater/         # Auto-update subsystem
+    ├── updater/              # Auto-update subsystem
     │
-    └── ui/              # PySide6 + QFluentWidgets presentation layer
+    └── ui/                   # PySide6 + QFluentWidgets presentation layer
         ├── main_window.py    # FluentWindow: navigation + backend wiring
         ├── theme.py          # Accent color and semantic status colors
         ├── pages/            # Classes / Connections / Settings pages
@@ -233,20 +213,23 @@ The application will automatically handle the meeting when its scheduled time ar
         └── widgets/          # Stat cards, meeting cards, day picker, etc.
 ```
 
+`data/` and `logs/` sit in the project root when you run from source. In a packaged build they move to your per-user app-data folder (`%LOCALAPPDATA%\EarlyBird` on Windows) so an update that replaces the executable can never take your saved classes with it. The Settings page shows and opens the exact folder in use.
+
 ---
 
 # How It Works
 
-When a meeting becomes due, EarlyBird 🐦:
+A background thread polls your saved classes every 15 seconds. Five minutes before a class, it sends a desktop notification. When the class is due, EarlyBird 🐦:
 
-1. Calculates whether the meeting should be joined.
-2. Opens (or reuses) the Chrome automation profile.
-3. Cleans up any previous meeting tabs if necessary.
-4. Navigates to the Google Meet link.
-5. Turns off the microphone.
-6. Turns off the camera.
-7. Clicks **Join now**.
-8. Updates recurring meetings to their next scheduled occurrence.
+1. Closes the window it opened for that connection's last meeting.
+2. Opens Chrome — its own isolated profile, or the one the class's connection points at.
+3. Navigates to the Google Meet link.
+4. Turns off the microphone.
+5. Turns off the camera.
+6. Clicks **Join now**.
+7. Marks the class joined, so a recurring one is ready for its next occurrence.
+
+Controls are found by their accessible name rather than screen position, so this keeps working across screen sizes and minor Meet redesigns. If the **Join now** button can't be found, EarlyBird saves a screenshot next to the log to show what it was looking at.
 
 ---
 

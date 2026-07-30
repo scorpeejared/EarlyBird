@@ -11,15 +11,8 @@ after that, use Chrome completely normally until you reboot.
 import stat
 from pathlib import Path
 
-try:  # imported as `src.launchers`
-    from . import paths
-except ImportError:  # imported flat, with src/ on sys.path
-    import paths
+from . import paths
 
-# Generated scripts have to go somewhere user-writable: when frozen,
-# __file__ points into PyInstaller's temp extraction folder, which is
-# wiped on exit (and can be read-only). paths.py resolves that.
-BASE_DIR = paths.APP_DIR
 LAUNCHER_DIR = paths.LAUNCHER_DIR
 LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -31,9 +24,8 @@ def _safe_filename(name: str) -> str:
 
 
 def generate_launchers(name: str, profile_directory: str, port: int) -> tuple[Path, Path]:
-    """Writes both a .bat (Windows) and .sh (Mac/Linux) launcher for this
-    connection and returns their paths. Harmless to generate both regardless
-    of your OS - you'll just use whichever one applies to you."""
+    """Write a .bat (Windows) and .sh (Mac/Linux) launcher for this
+    connection and return both paths; you use whichever fits your OS."""
     safe = _safe_filename(name)
 
     bat_path = LAUNCHER_DIR / f"launch_{safe}.bat"

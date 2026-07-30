@@ -1,9 +1,8 @@
 """
 SQLite-backed storage for meetings.
 
-Using SQLite instead of a flat JSON file so the app can safely handle
-concurrent reads (GUI thread) and writes (scheduler thread) without
-worrying about corrupting a whole file on every save.
+SQLite rather than a flat JSON file so the GUI thread and the scheduler
+thread can read and write concurrently without corrupting the file.
 """
 import sqlite3
 import threading
@@ -11,17 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from models import Meeting
-import recurrence
+from . import paths, recurrence
+from .models import Meeting
 
-try:  # imported as `src.storage`
-    from . import paths
-except ImportError:  # imported flat, with src/ on sys.path
-    import paths
-
-# Resolved by paths.py, which keeps the database out of PyInstaller's
-# temp extraction folder - see that module for why.
-DATA_DIR = paths.DATA_DIR
 DB_PATH = paths.DB_PATH
 
 _SCHEMA = """
@@ -47,19 +38,17 @@ CREATE TABLE IF NOT EXISTS meetings (
 
 
 class MeetingStore:
-    """Thread-safe-enough wrapper around a single SQLite file.
+    """Wrapper around a single SQLite file.
 
-    SQLite connections aren't shared across threads by default, so we
-    open a fresh connection per call. For this app's write volume
-    (a handful of rows, occasional writes) that's simpler and safer
-    than managing a connection pool.
+    SQLite connections can't be shared across threads, so every call
+    opens a fresh one - fine at this app's write volume, and it keeps
+    the GUI and scheduler threads independent.
     """
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self._lock = threading.Lock()
-        # sqlite3.connect() creates the file but not its parent folder,
-        # so make sure the folder is there before the first connection.
+        # sqlite3.connect() creates the file but not its parent folder.
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_SCHEMA)
@@ -79,13 +68,10 @@ class MeetingStore:
         if "join_early_minutes" not in existing_cols:
             conn.execute("ALTER TABLE meetings ADD COLUMN join_early_minutes INTEGER NOT NULL DEFAULT 0")
 
-        # Convert legacy daily/weekly rows to the new day-of-week format.
-        #
-        # Only rows with no recurring_days yet are legacy: RECURRING_WEEKLY
-        # is itself the string "weekly", so without the `not recurring_days`
-        # guard this would match every already-migrated weekly meeting too,
-        # re-running migrate_legacy_recurring() on every startup and
-        # collapsing a multi-day selection back down to a single day.
+        # Convert legacy daily/weekly rows to the day-of-week format. The
+        # `not recurring_days` guard is what marks a row as legacy - without
+        # it this also matches already-migrated weekly meetings and collapses
+        # a multi-day selection back down to one day on every startup.
         rows = conn.execute("SELECT id, recurring, scheduled_time, recurring_days FROM meetings").fetchall()
         for row in rows:
             if row["recurring"] in ("daily", "weekly") and not row["recurring_days"]:
@@ -191,11 +177,7 @@ class MeetingStore:
 
 
 def ensure_database(db_path: Path = DB_PATH) -> Path:
-    """Create data/meetings.db (and its schema) if it doesn't exist yet.
-
-    The app would create it lazily anyway on the first MeetingStore(),
-    but doing it at startup means the data folder is fully populated the
-    moment the app opens, whether or not anything has been saved yet.
-    """
+    """Create data/meetings.db and its schema at startup, so the data
+    folder is fully populated before anything has been saved."""
     MeetingStore(db_path)
     return db_path

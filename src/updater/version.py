@@ -1,10 +1,8 @@
 """
 Single source of truth for "what version am I".
 
-Every other updater module (and anything in the rest of the app that
-wants to show a version number, e.g. an About dialog) should import
-`__version__` from here rather than hardcoding it - bumping this one
-string is the entire release checklist on the version side.
+Bumping this one string is the whole release checklist on the version
+side; the build workflow refuses to publish a tag that disagrees with it.
 """
 from __future__ import annotations
 
@@ -14,12 +12,9 @@ __version__ = "2.0.2"
 def parse(version_string: str) -> tuple[int, ...]:
     """Turn 'v1.2.3' / '1.2.3' / '1.2' into a comparable tuple (1, 2, 3).
 
-    Deliberately lenient: GitHub tag names vary (`v1.2.0`, `1.2.0`,
-    `release-1.2.0`), so this strips a leading 'v' and any non-numeric
-    prefix, then takes the longest run of dot-separated integers it can
-    find. Anything it truly can't parse becomes (0,), which sorts lowest
-    rather than raising - a malformed tag should never crash the update
-    check, it should just look "not newer".
+    Lenient because GitHub tag names vary. Anything unparseable becomes
+    (0,), which sorts lowest - a malformed tag should look "not newer",
+    not crash the update check.
     """
     if not version_string:
         return (0,)
@@ -45,11 +40,5 @@ def parse(version_string: str) -> tuple[int, ...]:
 
 
 def get_installed_version() -> str:
-    """The version of the app currently running.
-
-    A thin wrapper (rather than importing `__version__` everywhere
-    directly) so this is the one place that would change if version
-    info ever moves to a build-time-generated file instead of a
-    hardcoded constant.
-    """
+    """The version of the app currently running."""
     return __version__

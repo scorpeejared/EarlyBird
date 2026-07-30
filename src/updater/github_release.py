@@ -1,28 +1,21 @@
 """
 GitHub Releases API client.
 
-Deliberately talks to exactly one endpoint:
-
-    GET /repos/{owner}/{repo}/releases/latest
-
-This is the "latest non-prerelease, non-draft release" endpoint - it
-will never surface a commit, a branch, or a draft/prerelease unless we
-explicitly ask the /releases list endpoint for one (which we don't).
-That's what keeps this "only check GitHub Releases" rather than
-"check GitHub for changes".
-
-Uses stdlib `urllib` instead of `requests` so this doesn't add a new
-dependency to requirements.txt for a handful of GET requests.
+Talks to exactly one endpoint, GET /repos/{owner}/{repo}/releases/latest,
+which only ever returns the latest non-draft, non-prerelease release -
+never a commit or branch. Uses stdlib urllib rather than adding
+`requests` for a handful of GET requests.
 """
 from __future__ import annotations
 
 import json
-import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("meet_automation")
+from ..logging_setup import get_logger
+
+logger = get_logger()
 
 API_BASE = "https://api.github.com"
 REQUEST_TIMEOUT_SECONDS = 10
@@ -47,14 +40,9 @@ class ReleaseInfo:
     prerelease: bool = False
 
     def pick_asset(self, name_contains: str | None = None) -> ReleaseAsset | None:
-        """Pick the asset meant for this platform/build.
-
-        `name_contains` is a substring match (case-insensitive) against
-        the asset filename - e.g. "windows" or "EarlyBird-Setup" or
-        "EarlyBird.exe", whatever convention the release assets use.
-        Falls back to the first asset if there's only one, so a repo
-        that ships a single .exe per release doesn't need any filtering.
-        """
+        """Pick the asset meant for this build, by case-insensitive
+        substring match on the filename. Falls back to the only asset
+        when a release ships just one."""
         if not self.assets:
             return None
         if name_contains:
@@ -73,13 +61,11 @@ class GitHubReleaseError(Exception):
 
 
 def get_latest_release(repo_owner: str, repo_name: str) -> ReleaseInfo | None:
-    """Fetch the latest published (non-draft, non-prerelease) release.
+    """Fetch the latest published release.
 
-    Returns None if the repo has no releases yet (GitHub returns 404
-    for /releases/latest in that case - that's a normal state, not an
-    error). Raises GitHubReleaseError for anything else that goes wrong
-    (network down, rate limited, malformed response) so the caller can
-    distinguish "no releases" from "couldn't check".
+    None means the repo has no releases yet (a 404 here is normal, not
+    an error); GitHubReleaseError means the check itself failed, so
+    callers can tell the two apart.
     """
     url = f"{API_BASE}/repos/{repo_owner}/{repo_name}/releases/latest"
     request = urllib.request.Request(

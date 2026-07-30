@@ -3,27 +3,19 @@ JSON-backed settings: a list of named Chrome "connections" you can pick
 between per class, plus small UI preferences (like remembered window size).
 
 Two kinds of connection:
-- "uia" (default, Windows only, zero setup): attaches to a Chrome window
-  you already have open normally, via Windows UI Automation. No debug
-  port, no launcher script, nothing to configure in Chrome itself.
+- "uia" (default, Windows only, zero setup): drives a Chrome window via
+  Windows UI Automation. No debug port, no launcher script, nothing to
+  configure in Chrome itself.
 - "cdp": attaches over Chrome's remote-debugging port, which requires
   starting Chrome via a generated launcher script instead of your normal
   icon. More precise about *which* profile it's controlling when you have
   several open at once, at the cost of that one extra step.
-
-Kept as its own tiny module (rather than another SQLite table) since it's
-a handful of global values read on every join attempt, not per-meeting data.
 """
 import json
 from pathlib import Path
 
-try:  # imported as `src.settings`
-    from . import paths
-except ImportError:  # imported flat, with src/ on sys.path
-    import paths
+from . import paths
 
-# Both resolved by paths.py, which keeps user data out of PyInstaller's
-# temp extraction folder - see that module for why.
 DATA_DIR = paths.DATA_DIR
 SETTINGS_PATH = paths.SETTINGS_PATH
 
@@ -32,7 +24,7 @@ _DEFAULTS = {
     "theme_mode": "auto",  # "light" | "dark" | "auto" (follow system)
     "updates": {
         "enabled": True,
-        "channel": "stable",  # future-proofing for a "beta" channel
+        "channel": "stable",  # only "stable" is wired up today
         "check_interval_minutes": 30,
         "skipped_version": "",  # set when the user dismisses a specific release
     },
@@ -42,12 +34,8 @@ ISOLATED_PROFILE_LABEL = "App's own isolated profile (default)"
 
 
 def ensure_data_dir() -> Path:
-    """Create the data folder and seed settings.json if it isn't there.
-
-    Writing the defaults out on first run (rather than only when the
-    user changes something) means the file always exists to look at or
-    hand-edit, and makes it obvious where the app is keeping its state.
-    """
+    """Create the data folder and seed settings.json if it isn't there,
+    so the file always exists to inspect or hand-edit."""
     paths.ensure_dirs()
     if not SETTINGS_PATH.exists():
         _write(dict(_DEFAULTS))
@@ -67,8 +55,7 @@ def load() -> dict:
 
 
 def _write(full: dict) -> None:
-    # mkdir here too: a save can be the very first thing that touches
-    # disk (e.g. saving window geometry) if the folder was removed.
+    # mkdir here too, in case the folder was removed while the app ran.
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(full, indent=2))
 
@@ -85,10 +72,8 @@ def get_connection(name: str) -> dict | None:
 
 
 def save_connections(connections: list[dict]) -> None:
-    # Merge into the full settings dict rather than overwrite it - a
-    # previous version of this function wrote only {"connections": ...},
-    # which silently wiped out any other settings key (like window
-    # geometry) every time a connection was added, edited, or removed.
+    # Merge into the full settings dict rather than overwrite it, or
+    # every connection edit wipes out the other settings keys.
     full = load()
     full["connections"] = connections
     _write(full)
@@ -133,9 +118,8 @@ def save_theme_mode(mode: str) -> None:
 
 
 def get_update_settings() -> dict:
-    # Merge nested defaults too (not just top-level) so a settings.json
-    # written before a new update-related key existed still picks up
-    # that key's default instead of a KeyError.
+    # Merge the nested defaults too, so a settings.json written before a
+    # new update key existed picks up that key's default instead of a KeyError.
     stored = load().get("updates", {})
     merged = dict(_DEFAULTS["updates"])
     merged.update(stored)

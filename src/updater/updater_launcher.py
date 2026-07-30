@@ -1,35 +1,25 @@
 """
 Spawns a standalone updater process that outlives EarlyBird itself.
 
-Why a separate process at all: the running .exe can't overwrite or
-delete its own file on Windows, so *something* has to do the file swap
-after EarlyBird has fully exited. That something is a small,
-self-deleting PowerShell script, launched detached from this process
-right before EarlyBird closes.
+The running .exe can't overwrite its own file on Windows, so the swap is
+done by a detached PowerShell script, launched just before EarlyBird
+closes and waiting on its PID. A generated script rather than a second
+compiled binary keeps it out of the PyInstaller build and signing setup;
+`launch()` is the only entry point, so that choice is swappable.
 
-A generated script (rather than a second compiled .exe shipped
-alongside the app) is the pragmatic choice today: it needs no separate
-PyInstaller build/signing pipeline to maintain, and PowerShell is
-present on every supported Windows version. If that ever becomes
-limiting (e.g. wanting a signed updater binary for stricter AV/SmartScreen
-behavior), swap the implementation inside `launch()` for one that writes
-the staged files' paths to a small companion exe instead - nothing
-outside this module needs to change, since update_manager only calls
-`launch()`.
-
-Safety note: the swap step explicitly skips `data/`, `logs/`, and any
-`*.db`/`settings.json` files by name, so a user's meetings and settings
-are never touched by an update, whether today's onefile layout or a
-future onedir layout is in play.
+The swap skips the names in _PRESERVE_NAMES, so an update never touches
+a user's meetings or settings.
 """
 from __future__ import annotations
 
-import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-logger = logging.getLogger("meet_automation")
+from ..logging_setup import get_logger
+
+logger = get_logger()
 
 _PRESERVE_NAMES = {"data", "logs", "settings.json"}
 
@@ -48,20 +38,15 @@ try {{
     Wait-Process -Id {pid} -Timeout 30 -ErrorAction SilentlyContinue
     Log "Wait-Process returned (process exited or wasn't running)."
 
-    # Give the OS a moment to release file handles even after the
-    # process object reports exited - a onedir build keeps DLLs
-    # loaded directly from disk the whole time it runs, so locks can
-    # briefly outlive the process itself.
+    # File locks can briefly outlive the process itself, so give the
+    # OS a moment to release the handles.
     Start-Sleep -Milliseconds 1000
 
-    # 2. Swap the app's top-level items (the exe, and for a onedir
-    # build its _internal/ folder) as whole units - rename the old one
-    # aside, move the new one in. This is deliberately NOT a recursive
-    # per-file copy: a onedir build's _internal folder can contain
-    # hundreds of DLLs, and copying them one at a time means any single
-    # still-locked file leaves a broken mix of old and new files behind.
-    # A folder rename/move is a single filesystem operation per item,
-    # so there's nothing to partially fail *within* an item.
+    # 2. Swap each top-level item (the exe, plus _internal/ on a onedir
+    # build) as a whole unit: rename the old aside, move the new in.
+    # Not a per-file copy - one still-locked DLL out of hundreds would
+    # leave a broken mix of old and new behind. A rename/move is a
+    # single filesystem operation, so it can't half-fail within an item.
     $stageDir = "{stage_dir}"
     $installDir = "{install_dir}"
     $preserve = @({preserve_list})
@@ -115,10 +100,9 @@ try {{
         Log "All items installed successfully."
     }}
 
-    # 3. Relaunch EarlyBird - same install path either way: on
-    # success it's the new version, on rollback it's the restored
-    # previous version, so the app comes back either way rather than
-    # leaving the user with nothing running.
+    # 3. Relaunch from the same install path either way - the new
+    # version on success, the restored one after a rollback - so the
+    # user is never left with nothing running.
     Log "Relaunching: {relaunch_exe}"
     try {{
         Start-Process -FilePath "{relaunch_exe}" -ErrorAction Stop
@@ -127,9 +111,8 @@ try {{
         Log "Start-Process FAILED: $($_.Exception.Message)"
     }}
 
-    # 4. Clean up: remove backups only after a successful install
-    # (best-effort - a leftover .bak folder doesn't break anything,
-    # it just wastes a little disk space until the next update).
+    # 4. Remove backups only after a successful install. Best-effort: a
+    # leftover .bak folder just wastes disk until the next update.
     if (-not $aborted) {{
         foreach ($b in $backups) {{
             try {{
@@ -163,17 +146,14 @@ def launch(
 ) -> Path:
     """Write and launch the detached updater script.
 
-    Call this *before* the app exits - it waits for `current_pid`
-    (defaulting to this process's own PID) to disappear, so it's safe
-    to launch first and then close the app normally afterward.
+    Call this *before* the app exits: it waits for `current_pid`
+    (this process by default) to disappear, so launching first and
+    closing afterwards is the intended order.
 
-    Returns the path to the log file the script writes to as it runs
-    (wait/copy/relaunch/cleanup, one line per step) - if an update
-    silently doesn't seem to have happened, that log is the first
-    place to look, since PowerShell errors have nowhere else to go
-    once this runs detached with no console window.
+    Returns the path of the log the script writes as it runs - the only
+    place its errors can surface, since it runs with no console window.
     """
-    pid = current_pid if current_pid is not None else __import__("os").getpid()
+    pid = current_pid if current_pid is not None else os.getpid()
 
     log_path = updates_root / "apply_update.log"
     preserve_list = ", ".join(f'"{name}"' for name in _PRESERVE_NAMES)
@@ -191,13 +171,10 @@ def launch(
 
     creationflags = 0
     if sys.platform == "win32":
-        # Deliberately NOT combining DETACHED_PROCESS with
-        # CREATE_NO_WINDOW - Windows documents these as mutually
-        # exclusive for CreateProcess, and combining them can make the
-        # call fail outright. CREATE_NO_WINDOW alone already hides the
-        # console for a console-subsystem app like powershell.exe;
-        # CREATE_NEW_PROCESS_GROUP keeps it from being tied to this
-        # process's lifetime/signals.
+        # Not DETACHED_PROCESS: Windows documents it as mutually
+        # exclusive with CREATE_NO_WINDOW, which alone already hides
+        # powershell.exe's console. CREATE_NEW_PROCESS_GROUP is what
+        # unties the script from this process's lifetime and signals.
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         CREATE_NO_WINDOW = 0x08000000
         creationflags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW

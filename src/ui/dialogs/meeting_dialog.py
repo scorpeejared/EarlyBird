@@ -23,16 +23,14 @@ from qfluentwidgets import (
     TimePicker,
 )
 
-from src import recurrence, settings
-from src.models import Meeting
+from ... import recurrence, settings
+from ...models import Meeting
 
 from ..widgets.day_picker import DayOfWeekPicker
 
-# Content area is capped at this height and scrolls internally instead of
-# growing the dialog - MaskDialogBase sizes the dialog to exactly the
-# parent window's size and centers the form inside it, so a form that's
-# taller than the window (e.g. once Repeat weekly reveals the day picker)
-# would otherwise get silently clipped rather than resizing anything.
+# The content area scrolls at this height instead of growing the dialog:
+# MaskDialogBase sizes itself to the parent window, so a taller form
+# (e.g. once Repeat weekly reveals the day picker) is silently clipped.
 _CONTENT_MAX_HEIGHT = 400
 
 
@@ -71,8 +69,8 @@ class MeetingDialog(MessageBoxBase):
         )
         self.viewLayout.addWidget(self.titleLabel)
 
-        # All form fields live in a scrollable content area (see
-        # _CONTENT_MAX_HEIGHT above) rather than directly in viewLayout.
+        # All form fields live in the scrollable content area, not
+        # directly in viewLayout - see _CONTENT_MAX_HEIGHT above.
         content = QWidget(self)
         form = QVBoxLayout(content)
         form.setContentsMargins(0, 0, 4, 0)
@@ -150,21 +148,17 @@ class MeetingDialog(MessageBoxBase):
         self.connection_combo.setCurrentText(default_label)
         form.addLayout(_field("Join using", self.connection_combo))
 
-        # Change 'scroll =' to 'self.scroll_area ='
         self.scroll_area = ScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setMaximumHeight(_CONTENT_MAX_HEIGHT)
         self.scroll_area.setWidget(content)
-        
-        # enableTransparentBackground() only styles self.widget() if it's
-        # already set, so it must run after setWidget().
+        # Must run after setWidget(): it only styles self.widget().
         self.scroll_area.enableTransparentBackground()
         self.viewLayout.addWidget(self.scroll_area)
 
-        # Set up smooth scrolling animation for the vertical scrollbar
         self._scroll_animation = QPropertyAnimation(self.scroll_area.verticalScrollBar(), b"value")
-        self._scroll_animation.setDuration(300)  # 300ms for a smooth, natural feel
+        self._scroll_animation.setDuration(300)
         self._scroll_animation.setEasingCurve(QEasingCurve.OutCubic)
 
         self.widget.setMinimumWidth(600)
@@ -176,11 +170,8 @@ class MeetingDialog(MessageBoxBase):
     def _toggle_repeat(self, repeating: bool) -> None:
         self.day_picker.setVisible(repeating)
         self.date_label.setText("Starting from" if repeating else "Date")
-        
-        # Wait a brief moment (50ms) for the layout engine to recalculate 
-        # the new content height, then trigger the smooth scroll.
+        # Let the layout recalculate the content height before scrolling.
         QTimer.singleShot(50, lambda: self._smooth_scroll_to_bottom() if repeating else self._smooth_scroll_to_top())
-
 
     def _smooth_scroll_to_bottom(self) -> None:
         scrollbar = self.scroll_area.verticalScrollBar()
@@ -195,7 +186,6 @@ class MeetingDialog(MessageBoxBase):
             self._scroll_animation.setStartValue(scrollbar.value())
             self._scroll_animation.setEndValue(0)
             self._scroll_animation.start()
-
 
     def _warn(self, title: str, content: str) -> None:
         InfoBar.error(
@@ -270,5 +260,5 @@ def _labeled_switch(label_text: str, switch: SwitchButton) -> QHBoxLayout:
     row.setSpacing(10)
     row.addWidget(BodyLabel(label_text))
     row.addWidget(switch)
-    row.addStretch(1)  # Add stretch at the end to keep everything left-aligned
+    row.addStretch(1)
     return row

@@ -9,11 +9,9 @@ from .. import theme
 def make_badge(text: str, fg: str, bg: str, parent=None) -> CaptionLabel:
     """Build a status pill label.
 
-    A plain factory function rather than a CaptionLabel subclass: several
-    QFluentWidgets label constructors use ``singledispatchmethod`` on
-    ``__init__``, which re-dispatches through ``self.__init__`` internally -
-    subclassing and overriding ``__init__`` with extra required
-    parameters breaks that dispatch, so composition is used instead.
+    A factory, not a CaptionLabel subclass: QFluentWidgets label
+    constructors dispatch through ``singledispatchmethod`` on
+    ``__init__``, which breaks if a subclass adds required arguments.
     """
     label = CaptionLabel(text, parent)
     label.setStyleSheet(

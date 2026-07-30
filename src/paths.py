@@ -1,21 +1,12 @@
 """
 Single source of truth for every location EarlyBird writes to.
 
-Why this module exists: in a PyInstaller --onefile build, `__file__` for
-a bundled module points inside `sys._MEIPASS` - a temporary folder the
-bootloader deletes as soon as the app exits. Any path built from
-`Path(__file__).parent...` therefore *looks* fine at runtime (the write
-succeeds, nothing errors) but is gone by the next launch. That's exactly
-how meetings.db and settings.json were silently disappearing between
-runs of the packaged app.
-
-So, when frozen, everything the user owns lives under the per-user
-app-data directory instead. That location is also deliberately outside
-the install directory, so an in-place self-update that swaps the .exe
-can never take a user's meetings with it.
-
-When running from source (`python main.py`) the layout is unchanged -
-the project root - so a dev checkout keeps using ./data and ./logs.
+In a PyInstaller build, paths derived from `__file__` land inside
+`sys._MEIPASS`, a temp folder the bootloader deletes on exit - so when
+frozen, user data goes to the per-user app-data directory instead. That
+is also outside the install directory, so an in-place self-update that
+swaps the .exe can never take a user's meetings with it. Running from
+source keeps ./data and ./logs in the project root.
 """
 from __future__ import annotations
 

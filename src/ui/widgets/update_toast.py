@@ -1,15 +1,9 @@
-"""'An update is available' notification, rendered INSIDE the app window.
+"""'An update is available' card, docked in a corner of the app window.
 
-This is a plain child QWidget of MainWindow - not a separate top-level
-window - so it reads as an in-app notification card docked in a corner
-of the app's own client area, rather than a Windows/OS-style toast or a
-floating always-on-top panel that lives independently of the app. It
-follows the parent window around (repositions on resize) and gets
-raised above whatever page is currently showing.
-
-Deliberately compact: just the hyperlinked version, a one-line status,
-and "Restart & Update" / "Later" - no release notes, so it never grows
-tall enough to get in the way of the app underneath it.
+A child QWidget of MainWindow rather than a top-level window, so it
+follows the parent around and stays inside the app's own client area.
+No release notes, so it can't grow tall enough to obscure the page
+behind it.
 """
 from __future__ import annotations
 

@@ -20,16 +20,13 @@ class StatCard(CardWidget):
         icon_widget = IconWidget(icon, self)
         icon_widget.setFixedSize(18, 18)
 
-        self._value_label = TitleLabel(str(value), self)
-        self._value_label.setStyleSheet(f"color: {accent};")
+        value_label = TitleLabel(str(value), self)
+        value_label.setStyleSheet(f"color: {accent};")
 
         caption = CaptionLabel(label, self)
         caption.setTextColor("#6B7280", "#9CA3AF")
 
         layout.addWidget(icon_widget)
-        layout.addWidget(self._value_label)
+        layout.addWidget(value_label)
         layout.addWidget(caption)
         layout.addStretch(1)
-
-    def set_value(self, value: int) -> None:
-        self._value_label.setText(str(value))

@@ -5,12 +5,12 @@ matching src/recurrence.py; only the on-screen order and labels differ.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from qfluentwidgets import CaptionLabel, TransparentPushButton, isDarkTheme, setFont
 
-from src import recurrence
+from ... import recurrence
 
 from .. import theme
 
@@ -18,10 +18,9 @@ from .. import theme
 class _DayToggle(QPushButton):
     """A single circular Sun..Sat toggle button.
 
-    Plain QPushButton (styled to match Fluent) rather than QFluentWidgets'
-    PushButton: that class's constructor uses singledispatchmethod, which
-    re-enters ``self.__init__`` and breaks when a subclass's ``__init__``
-    takes an additional required argument like ``letter`` here.
+    Plain QPushButton styled to match Fluent, not QFluentWidgets'
+    PushButton: that constructor dispatches through
+    ``singledispatchmethod``, which breaks on the required ``letter``.
     """
 
     DIAMETER = 34
@@ -56,8 +55,6 @@ class _DayToggle(QPushButton):
 
 class DayOfWeekPicker(QWidget):
     """Lets the user pick which weekdays a recurring class repeats on."""
-
-    changed = Signal()
 
     def __init__(self, initial_days: frozenset[int] | None = None, parent=None):
         super().__init__(parent)
@@ -94,7 +91,6 @@ class DayOfWeekPicker(QWidget):
 
     def _on_changed(self) -> None:
         self._summary.setText(recurrence.format_repeat_label(self.get_days()))
-        self.changed.emit()
 
     def get_days(self) -> frozenset[int]:
         return frozenset(wd for wd, btn in self._buttons.items() if btn.isChecked())
@@ -104,4 +100,3 @@ class DayOfWeekPicker(QWidget):
         for weekday, btn in self._buttons.items():
             btn.setChecked(weekday in days)
         self._summary.setText(recurrence.format_repeat_label(frozenset(days)))
-        self.changed.emit()

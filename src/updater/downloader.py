@@ -4,7 +4,6 @@ arrived intact before anything downstream trusts it.
 """
 from __future__ import annotations
 
-import logging
 import tempfile
 import urllib.error
 import urllib.request
@@ -12,8 +11,9 @@ from pathlib import Path
 from typing import Callable
 
 from .github_release import ReleaseAsset
+from ..logging_setup import get_logger
 
-logger = logging.getLogger("meet_automation")
+logger = get_logger()
 
 REQUEST_TIMEOUT_SECONDS = 30
 CHUNK_SIZE = 1024 * 256  # 256 KB
@@ -26,13 +26,9 @@ class DownloadError(Exception):
 
 
 def staging_dir() -> Path:
-    """Where in-progress/completed downloads live before install.
-
-    Uses the system temp dir under a namespaced subfolder rather than
-    anything inside the app's own install directory, since on Windows
-    the install directory may not be writable without elevation and
-    (more importantly) is the thing about to be replaced.
-    """
+    """Where downloads live before install: the system temp dir, not the
+    install directory, which may need elevation to write and is the very
+    thing about to be replaced."""
     path = Path(tempfile.gettempdir()) / "EarlyBird" / "updates"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -43,15 +39,11 @@ def download_asset(
     destination_dir: Path | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> Path:
-    """Download `asset` and return the local path once fully verified.
+    """Download `asset` and return the local path once verified.
 
-    Verification here is a size check against what GitHub reported for
-    the asset (Content-Length should agree, and the bytes actually
-    written should match too) - cheap, catches truncated/interrupted
-    downloads, and doesn't require the release process to also publish
-    a checksum file (release signature verification is listed as a
-    later addition; this is intentionally the minimal honest check
-    that fits today's release process).
+    Verification is a size check against what GitHub reported, which
+    catches truncated downloads without the release process having to
+    publish a checksum file.
     """
     dest_dir = destination_dir or staging_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -91,17 +83,3 @@ def download_asset(
     tmp_path.replace(dest_path)
     logger.info("Downloaded update asset '%s' (%d bytes) to %s", asset.name, written, dest_path)
     return dest_path
-
-
-def cleanup_staging() -> None:
-    """Remove any leftover files from previous update attempts.
-
-    Called after a successful install and also opportunistically on
-    startup, so a crashed/interrupted update doesn't leave partial
-    downloads accumulating in temp forever.
-    """
-    import shutil
-
-    path = staging_dir()
-    if path.exists():
-        shutil.rmtree(path, ignore_errors=True)

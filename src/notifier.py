@@ -1,11 +1,9 @@
 """
-Cross-platform desktop notifications.
-
-Uses plyer (works on Windows/macOS/Linux) so we're not tied to a single OS.
+Cross-platform desktop notifications, via plyer.
 """
-import logging
+from .logging_setup import get_logger
 
-logger = logging.getLogger("meet_automation")
+logger = get_logger()
 
 
 def notify(title: str, message: str, timeout: int = 10) -> None:

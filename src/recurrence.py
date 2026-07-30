@@ -79,21 +79,15 @@ def format_schedule_summary(meeting, now: datetime | None = None) -> str:
 
 
 def _occurrence_datetime(meeting, on_date: date) -> datetime:
-    """Combine a calendar date with the meeting's stored time-of-day.
-
-    This is the *displayed* scheduled time - it never reflects
-    join_early_minutes. Use _join_datetime() below for the time the
-    automation should actually act.
-    """
+    """The meeting's *displayed* time on a given date - never shifted by
+    join_early_minutes. Use _join_datetime() for when automation acts."""
     t = meeting.scheduled_time.time()
     return datetime.combine(on_date, t)
 
 
 def _join_datetime(meeting, on_date: date) -> datetime:
-    """The actual moment automation should join, i.e. the occurrence time
-    minus any configured early-join offset. The scheduled time shown in
-    the UI is never changed - only this internal value shifts earlier.
-    """
+    """When automation should join: the occurrence time minus the
+    early-join offset."""
     early = getattr(meeting, "join_early_minutes", 0) or 0
     return _occurrence_datetime(meeting, on_date) - timedelta(minutes=early)
 
@@ -108,21 +102,9 @@ def is_active_on_date(meeting, on_date: date) -> bool:
     return on_date == meeting.scheduled_time.date()
 
 
-def seconds_until_occurrence(meeting, now: datetime) -> float | None:
-    """Seconds from *now* until the next occurrence, or None if not applicable today."""
-    today = now.date()
-    if not is_active_on_date(meeting, today):
-        return None
-    target = _occurrence_datetime(meeting, today)
-    return (target - now).total_seconds()
-
-
 def seconds_until_join(meeting, now: datetime) -> float | None:
-    """Seconds from *now* until the automation should actually join, or
-    None if not applicable today. Identical to seconds_until_occurrence()
-    when join_early_minutes is 0 (the default), so existing behavior is
-    unchanged unless a user opts into early joining.
-    """
+    """Seconds from *now* until automation should join, or None if this
+    meeting isn't active today."""
     today = now.date()
     if not is_active_on_date(meeting, today):
         return None
@@ -133,10 +115,8 @@ def seconds_until_join(meeting, now: datetime) -> float | None:
 def is_due(meeting, now: datetime, window_seconds: int = 30) -> bool:
     """True when the meeting should auto-join right now.
 
-    The comparison is against the *join* time (scheduled_time minus
-    join_early_minutes), not the displayed scheduled_time, so setting a
-    "join early" offset makes automation fire earlier without changing
-    what's shown as the meeting's scheduled time anywhere else.
+    Compared against the join time (scheduled_time minus
+    join_early_minutes), not the displayed scheduled_time.
     """
     if not meeting.auto_join:
         return False
@@ -156,13 +136,8 @@ def is_due(meeting, now: datetime, window_seconds: int = 30) -> bool:
 
 
 def should_notify(meeting, now: datetime, lead_seconds: int) -> bool:
-    """True when a pre-join notification should fire.
-
-    Timed relative to the actual join time (which may be earlier than
-    scheduled_time), so the heads-up always arrives before automation
-    acts. With join_early_minutes at its default of 0 this is identical
-    to the previous behavior.
-    """
+    """True when a pre-join notification should fire. Timed off the join
+    time, so the heads-up always lands before automation acts."""
     if is_recurring(meeting):
         if meeting.last_notified_date == today_iso(now):
             return False

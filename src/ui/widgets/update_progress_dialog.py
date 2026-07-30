@@ -1,17 +1,9 @@
 """In-app progress UI shown while an update downloads and installs.
 
-A MessageBoxBase (same masked-overlay pattern as MeetingDialog/
-ConnectionAddEditDialog), but with the Save/Cancel footer replaced: no
-buttons at all while busy (there's nothing useful to click, and closing
-partway through isn't something we want to make easy), then a single
-"Close" button once the process reaches a state that needs
-acknowledging (a dev-mode finish, or a failure). On success the app
-restarts on its own, so nothing needs to be clicked at all.
-
-Every color here comes from QFluentWidgets components (ProgressBar,
-StrongBodyLabel, CaptionLabel, etc.) or from theme.py's semantic
-constants, so it follows the app's Light/Dark/Use system setting
-automatically - the same as the rest of the app.
+A MessageBoxBase with no footer buttons while busy, then a single
+"Close" once something needs acknowledging (a dev-mode finish or a
+failure). On success the app restarts itself, so there is nothing to
+click at all.
 """
 from __future__ import annotations
 
@@ -38,8 +30,7 @@ def _format_bytes(n: int) -> str:
 
 class UpdateProgressDialog(MessageBoxBase):
     """Shows download/install progress. Call the set_* methods from the
-    main thread as the update proceeds; nothing here touches the network
-    or filesystem itself."""
+    main thread; nothing here touches the network or filesystem."""
 
     def __init__(self, parent, version_tag: str):
         super().__init__(parent)
@@ -67,9 +58,7 @@ class UpdateProgressDialog(MessageBoxBase):
 
         self.widget.setMinimumWidth(420)
 
-        # No Save/Cancel needed while this is running - see module
-        # docstring. hideYesButton()/hide() on the footer strip removes
-        # both actions until a terminal state re-shows "Close".
+        # No footer actions until _finish() re-shows "Close".
         self.hideYesButton()
         self.cancelButton.setText("Close")
         self.buttonGroup.hide()
@@ -85,15 +74,14 @@ class UpdateProgressDialog(MessageBoxBase):
             self._show_determinate(percent)
             self.detail_label.setText(f"{_format_bytes(downloaded)} of {_format_bytes(total)} ({percent}%)")
         else:
-            # No Content-Length to compare against - still show something
-            # moving rather than a progress bar that's stuck at 0%.
+            # No Content-Length, so show movement rather than a bar
+            # stuck at 0%.
             self._show_indeterminate()
             self.detail_label.setText(f"{_format_bytes(downloaded)} downloaded")
 
     def set_stage(self, message: str) -> None:
-        """A coarse-grained status update, e.g. 'Preparing update...' or
-        'Update staged - restarting...' - no byte-level progress to show
-        for these steps, so the indeterminate bar takes over."""
+        """A coarse status update, e.g. 'Preparing update...'. These steps
+        have no byte progress, so the indeterminate bar takes over."""
         self.stage_label.setText(message)
         self.detail_label.setText("")
         self._show_indeterminate()
@@ -132,9 +120,7 @@ class UpdateProgressDialog(MessageBoxBase):
         self.buttonGroup.show()
 
     def reject(self) -> None:  # noqa: N802 (Qt override)
-        # Blocks Escape/close while an update is actively downloading or
-        # installing; once _finish() has run (error or dev-mode done)
-        # this behaves like a normal dialog again.
+        # Escape/close is blocked mid-update; normal again after _finish().
         if self._busy:
             return
         super().reject()

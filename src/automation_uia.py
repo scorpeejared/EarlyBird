@@ -1,54 +1,30 @@
 """
-Joins a Google Meet using Windows UI Automation (the same OS-level
-accessibility API screen readers use) instead of Chrome's remote-debugging
-protocol.
+Joins a Google Meet using Windows UI Automation - the OS-level
+accessibility API - rather than Chrome's remote-debugging protocol, which
+Chrome refuses to expose for your real profile as of Chrome 136.
 
-Two ways this can get you a window to work with:
-1. LAUNCH mode (recommended): given a profile_directory, just runs
-   `chrome.exe --profile-directory=<name> --new-window` directly - this
-   always opens a fresh, dedicated window for that profile, whether Chrome
-   was already running (under this or a different profile) or completely
-   closed. No pre-existing window required, nothing to leave open.
-2. ATTACH mode (fallback, legacy): if no profile_directory is configured,
-   finds an already-open Chrome window (optionally matched by a title
-   substring) and opens a new window from it via Ctrl+N. Requires Chrome
-   to already be open with a matching window.
-
-Why UI Automation instead of CDP: Chrome only exposes its remote-debugging
-port on request, and since Chrome 136 it refuses to do so at all for your
-real, default profile (a deliberate anti-malware security change - see
-README). UI Automation needs nothing from Chrome at all - Windows already
-exposes every window's controls through this API, and Chrome already
-supports it (for screen readers) with zero configuration.
+Two ways to get a window to work with:
+1. LAUNCH mode (default): given a profile_directory, runs chrome.exe for
+   that profile with the link. Works whether Chrome is already open or not.
+2. ATTACH mode: with no profile_directory, finds an already-open Chrome
+   window (optionally matched by title) and opens a new one from it via
+   Ctrl+N. Still reachable for connections saved without a profile.
 
 Windows-only. Requires pywinauto (and its pywin32 dependency).
 """
 from __future__ import annotations
 
-import logging
 import os
 import subprocess
 import time
-from dataclasses import dataclass
 
-try:  # imported as `src.automation_uia`
-    from . import paths
-except ImportError:  # imported flat, with src/ on sys.path
-    import paths
+from . import paths
+from .logging_setup import get_logger
+from .models import JoinResult
 
-# Was next to the .exe when frozen, which fails outright if the app is
-# installed somewhere the user can't write to (Program Files); paths.py
-# puts it in the per-user app-data folder instead.
-BASE_DIR = paths.APP_DIR
 LOG_DIR = paths.LOG_DIR
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    filename=LOG_DIR / "automation.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("meet_automation")
+logger = get_logger()
 
 MIC_OFF_LABELS = ["Turn off microphone"]
 CAM_OFF_LABELS = ["Turn off camera"]
@@ -85,13 +61,6 @@ def _close_previous_window(key: str) -> None:
         logger.warning(f"Could not close previous auto-join window: {e}")
 
 
-@dataclass
-class JoinResult:
-    success: bool
-    message: str
-    screenshot_path: str | None = None
-
-
 def _require_pywinauto():
     try:
         import pywinauto
@@ -100,7 +69,8 @@ def _require_pywinauto():
         return False
 
 
-def _normalize_profile_directory(value: str) -> str:
+def normalize_profile_directory(value: str) -> str:
+    """Reduce a pasted Chrome 'Profile Path' to just its last folder name."""
     value = value.strip().strip('"').rstrip("\\/")
     if "\\" in value or "/" in value:
         normalized = value.replace("/", "\\").split("\\")[-1]
@@ -213,7 +183,7 @@ def _find_window(title_hint: str | None):
     if not candidates:
         return None
     if not title_hint:
-        return candidates[0]  # most recently enumerated / first found
+        return candidates[0]
     for w in candidates:
         try:
             if title_hint.lower() in w.window_text().lower():
@@ -234,9 +204,9 @@ def _set_clipboard(text: str) -> None:
 
 
 def _find_button_by_names(window, names: list[str], timeout_s: int):
-    """Poll the window's accessibility tree for a button whose name matches
-    one of the candidates - Chrome populates this tree slightly after the
-    page itself appears to load, so this is a genuine wait, not a guess."""
+    """Poll the window's accessibility tree for a button matching one of
+    these names. Chrome populates that tree after the page looks loaded,
+    so this has to wait rather than check once."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
@@ -270,15 +240,15 @@ def join_google_meet_uia(
         )
 
     connection_key = profile_directory or title_hint or "_default_"
-    needs_manual_navigation = True  # launch mode navigates itself; attach mode (Ctrl+N) doesn't
-    how = "new_window"  # attach-mode (Ctrl+N) always creates a new window; launch mode overrides this below
+    needs_manual_navigation = True  # launch mode navigates itself; Ctrl+N doesn't
+    how = "new_window"  # Ctrl+N always makes one; launch mode overrides this below
 
     try:
         _close_previous_window(connection_key)
         before_handles = _chrome_window_handles()
 
         if profile_directory:
-            profile_directory = _normalize_profile_directory(profile_directory)
+            profile_directory = normalize_profile_directory(profile_directory)
             chrome_exe = _find_chrome_exe()
             if not chrome_exe:
                 return JoinResult(
@@ -309,9 +279,8 @@ def join_google_meet_uia(
             )
             needs_manual_navigation = False  # Chrome already loaded the link for us
         else:
-            # Legacy fallback: attach to an existing window and spawn a new
-            # one from it via Ctrl+N, same isolation guarantee, but requires
-            # Chrome to already be open with a matching window.
+            # Attach mode: spawn a new window from an existing one via
+            # Ctrl+N. Requires Chrome to already be open and matching.
             source = _find_window(title_hint)
             if source is None:
                 return JoinResult(
@@ -347,15 +316,11 @@ def join_google_meet_uia(
             meet_window.type_keys("{ENTER}", pause=0.05)
             logger.info(f"Navigated to {link} via UI Automation (dedicated window)")
 
-        window = meet_window  # everything below operates on the target window
+        window = meet_window
 
-        # Only track this window for auto-cleanup-before-next-join if we
-        # actually created it ourselves (a fresh window, or a new one from
-        # Ctrl+N). If Chrome reused your already-open window instead, that
-        # window is yours - with your own other tabs in it - and must never
-        # be auto-closed later. This is a deliberate safety boundary, not
-        # an oversight: closing a window we didn't create risks losing
-        # whatever else you had open in it.
+        # Only windows this app created are tracked for auto-close before
+        # the next join. If Chrome reused an already-open window instead,
+        # it holds the user's own tabs and must never be closed for them.
         if how == "new_window":
             try:
                 _last_meet_window_handles[connection_key] = meet_window.handle
@@ -367,9 +332,7 @@ def join_google_meet_uia(
                 "auto-close, since it's your window, not one this app created."
             )
 
-        # Give Meet's page a moment to render before we start polling for
-        # controls - the accessibility tree lags slightly behind the visual
-        # page load.
+        # The accessibility tree lags behind the visual page load.
         time.sleep(3)
 
         _find_button_by_names(window, DISMISS_LABELS, timeout_s=2)

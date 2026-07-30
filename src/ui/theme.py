@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from qfluentwidgets import Theme, setTheme, setThemeColor
 
-# Same indigo used by the previous Tkinter build, so the app keeps its
-# visual identity through the framework change.
 ACCENT = "#5B5FC7"
 
 SUCCESS = "#0F9D58"
@@ -33,17 +31,14 @@ NEUTRAL_BG_DARK = "#2B2B2E"
 CARD_RADIUS = 8
 BADGE_RADIUS = 11
 
-# The default rich-text anchor color Qt picks is a pale blue that reads
-# fine on the dark theme but is barely legible on the light theme's
-# white cards - so links use this fixed, theme-independent color
-# instead of relying on Qt's default link styling.
+# Qt's default anchor color is barely legible on the light theme's white
+# cards, so links get a fixed, theme-independent color instead.
 LINK_COLOR = "#3B5BDB"
 
 
 def link_html(url: str, text: str) -> str:
-    """A hyperlink with an explicit, legible color in both themes -
-    use this instead of a bare `<a href=...>` anywhere a link appears
-    next to CaptionLabel/other themed text."""
+    """A hyperlink that stays legible in both themes - use this instead
+    of a bare `<a href=...>`."""
     return f'<a href="{url}" style="color:{LINK_COLOR}; font-weight:600;">{text}</a>'
 
 

@@ -19,7 +19,7 @@ from qfluentwidgets import (
     TableWidget,
 )
 
-from src import automation_uia, cdp_probe, launchers, settings
+from ... import automation_uia, cdp_probe, launchers, settings
 
 from ..dialogs.connection_dialog import ConnectionAddEditDialog
 

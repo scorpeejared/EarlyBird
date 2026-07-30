@@ -1,10 +1,10 @@
 """
-Data model for a scheduled Google Meet class.
+Data models shared across the app.
 """
 from dataclasses import dataclass
 from datetime import datetime
 
-from recurrence import is_recurring, format_schedule_summary
+from .recurrence import is_recurring, format_schedule_summary
 
 
 @dataclass
@@ -37,3 +37,12 @@ class Meeting:
 
     def schedule_summary(self) -> str:
         return format_schedule_summary(self)
+
+
+@dataclass
+class JoinResult:
+    """Outcome of one join attempt, from either automation backend."""
+
+    success: bool
+    message: str
+    screenshot_path: str | None = None

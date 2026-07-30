@@ -1,33 +1,26 @@
 """
-EarlyBird - main GUI application.
+EarlyBird - application entry point.
 
 A PySide6 + QFluentWidgets interface for managing scheduled Google Meet
 links, backed by SQLite, with a background scheduler thread that
 auto-joins meetings at their scheduled time and a system tray icon so
 the app can run quietly in the background.
 
-This module owns startup/bootstrap only - all scheduling, automation,
-storage, and Chrome-integration logic lives in src/scheduler.py,
-src/automation.py, src/automation_uia.py, src/storage.py, and
-src/settings.py, and is untouched here. The window itself lives in
-src/ui/main_window.py.
+This module owns startup only. Everything else lives under src/ - the
+window itself is src/ui/main_window.py.
 """
 from __future__ import annotations
 
 import sys
-from pathlib import Path
-
-_src_path = Path(__file__).parent / "src"
-if str(_src_path) not in sys.path:
-    sys.path.insert(0, str(_src_path))
-_root_path = Path(__file__).parent
-if str(_root_path) not in sys.path:
-    sys.path.insert(0, str(_root_path))
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from src import paths, settings, storage
+# The project root is already on sys.path (Python adds the running
+# script's directory), so `src` imports resolve both from source and
+# from a PyInstaller build. Modules inside src/ import each other
+# relatively; this is the only file that names them absolutely.
+from src import logging_setup, paths, settings, storage
 from src.ui.main_window import MainWindow
 
 
@@ -38,12 +31,11 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # the tray icon keeps the app alive
 
-    # Make sure the app's storage exists before anything reads from it:
+    # Create everything the app writes to before anything reads from it:
     # data/ + logs/, a settings.json seeded with defaults, and an empty
-    # meetings.db with its schema. paths.py decides *where* that lives -
-    # notably not inside the PyInstaller temp folder, which is deleted
-    # on exit and used to take every saved meeting with it.
+    # meetings.db with its schema.
     paths.ensure_dirs()
+    logging_setup.configure()
     settings.ensure_data_dir()
     storage.ensure_database()
 

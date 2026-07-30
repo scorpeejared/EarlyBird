@@ -1,28 +1,25 @@
 """
-Main application window.
-
-Owns presentation only - all scheduling, automation, storage, and
-Chrome-integration logic lives in scheduler.py / automation.py /
-automation_uia.py / storage.py / settings.py and is untouched here, same
-split the previous Tkinter build used.
+Main application window: navigation shell, tray icon, and the wiring
+between the pages and the scheduler/updater services.
 """
 from __future__ import annotations
 
-import logging
 import threading
+from datetime import datetime
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QGuiApplication, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition, MessageBox, NavigationItemPosition
 
-from src import settings
-from src.models import Meeting
-from src.scheduler import SchedulerService
-from src.storage import MeetingStore
-from src.updater import ReleaseInfo, UpdateManager
-from src.updater.version import __version__ as APP_VERSION
+from .. import settings
+from ..logging_setup import get_logger
+from ..models import Meeting
+from ..scheduler import SchedulerService
+from ..storage import MeetingStore
+from ..updater import ReleaseInfo, UpdateManager
+from ..updater.version import __version__ as APP_VERSION
 
 from .dialogs.meeting_dialog import MeetingDialog
 from .pages.connections_page import ConnectionsPage
@@ -36,14 +33,15 @@ APP_TITLE = "EarlyBird 🐦"
 UPDATE_REPO_OWNER = "scorpeejared"
 UPDATE_REPO_NAME = "EarlyBird"
 
+logger = get_logger()
+
 
 class _EventBridge(QObject):
     """Relays background-thread callbacks onto the Qt main thread.
 
-    Both SchedulerService and UpdateManager invoke their callbacks from a
-    worker thread; emitting a Qt signal here and connecting it with the
-    (default) auto-queued connection is what safely hops that back onto
-    the GUI thread, equivalent to the old code's ``self.after(0, ...)``.
+    SchedulerService and UpdateManager both fire their callbacks from a
+    worker thread; a queued signal connection is what makes it safe to
+    touch widgets in response.
     """
 
     status_changed = Signal(str)
@@ -72,7 +70,6 @@ def _build_tray_icon_pixmap() -> QIcon:
 class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
-        settings.ensure_data_dir()
         self._theme_mode = settings.get_theme_mode()
         apply_theme(self._theme_mode)
         self.setWindowTitle(APP_TITLE)
@@ -162,14 +159,10 @@ class MainWindow(FluentWindow):
 
     def _periodic_refresh(self) -> None:
         self._refresh_all()
-        # Don't clobber "Checking for updates..." or an "update available"
-        # prompt with the routine watching-count status - this was the bug
-        # where a check-for-updates click would flash to "Checking for
-        # updates..." and then get overwritten by this exact status line
-        # within 5 seconds, even once a real update had been found.
+        # Don't overwrite "Checking for updates..." or an update prompt
+        # with the routine watching-count line.
         if self._checking_updates or self._pending_release is not None:
             return
-        from datetime import datetime
         stamp = datetime.now().strftime("%I:%M:%S %p").lstrip("0")
         self.settings_page.set_status(f"Watching {self._watching_count} meetings  ·  Last checked {stamp}")
 
@@ -188,10 +181,8 @@ class MainWindow(FluentWindow):
         self._theme_mode = mode
         settings.save_theme_mode(mode)
         apply_theme(mode)
-        # Most QFluentWidgets components re-theme themselves automatically,
-        # but the meeting cards' status-badge colors and the day-of-week
-        # picker are custom-styled with an explicit light/dark variant
-        # baked in at build time, so they need a rebuild to pick the new one up.
+        # Meeting-card badges and the day picker bake their light/dark
+        # colors in at build time, so they need rebuilding to re-theme.
         self._refresh_all()
 
     # ---------- toasts ----------
@@ -302,9 +293,8 @@ class MainWindow(FluentWindow):
 
         def worker():
             try:
-                # force=True: a manual click always gets a real answer,
-                # even if this version was previously skipped via
-                # "Later" - see UpdateManager.check_for_updates.
+                # force=True: a manual click gets a real answer even if
+                # this version was previously dismissed with "Later".
                 self.update_manager.check_for_updates(force=True)
             finally:
                 self._checking_updates = False
@@ -327,14 +317,13 @@ class MainWindow(FluentWindow):
         self._update_toast.show()
 
     def _on_inline_update_now(self) -> None:
-        """'Update now' clicked on the Settings page itself (as opposed
-        to the corner toast) - same action, same release."""
+        """'Update now' on the Settings page - same action as the toast."""
         if self._pending_release:
             self._start_restart_and_update(self._pending_release)
 
     def _on_inline_update_later(self) -> None:
-        """'Later' clicked from either the Settings page or the toast -
-        dismiss this version and put both back to their idle state."""
+        """'Later', from either the Settings page or the toast: dismiss
+        this version and put both back to their idle state."""
         if self._pending_release:
             self.update_manager.dismiss(self._pending_release)
         self._pending_release = None
@@ -343,15 +332,12 @@ class MainWindow(FluentWindow):
             self._update_toast.close()
 
     def _start_restart_and_update(self, release: ReleaseInfo) -> None:
-        """Download + stage the update in a background thread (so the UI
-        never freezes), then run the app's normal quit sequence - by the
-        time this process exits, the detached updater script is already
-        waiting on its PID to do the file swap and relaunch."""
+        """Download and stage the update on a background thread, then run
+        the normal quit sequence - by the time this process exits, the
+        detached updater is already waiting on its PID to swap files."""
         self.settings_page.clear_update_available()
         if self._update_toast:
-            # The progress dialog below takes over as the one place
-            # showing update status now that the user has committed to
-            # updating - no need for the corner toast to stick around too.
+            # The progress dialog takes over as the one status surface.
             self._update_toast.close()
 
         dlg = UpdateProgressDialog(self, release.tag)
@@ -365,7 +351,7 @@ class MainWindow(FluentWindow):
                     release, on_progress=self._bridge.download_progress.emit
                 )
             except Exception as e:
-                logging.getLogger("meet_automation").exception("Update install failed")
+                logger.exception("Update install failed")
                 self._bridge.status_changed.emit(f"Update failed: {e}")
                 return
             finally:
@@ -436,5 +422,4 @@ class MainWindow(FluentWindow):
         self.update_manager.stop()
         if self.tray_icon:
             self.tray_icon.hide()
-        from PySide6.QtWidgets import QApplication
         QApplication.instance().quit()

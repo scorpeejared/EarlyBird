@@ -16,8 +16,8 @@ from qfluentwidgets import (
     SubtitleLabel,
 )
 
-from src import recurrence
-from src.models import Meeting
+from ... import recurrence
+from ...models import Meeting
 
 from ..widgets.meeting_card import MeetingCard
 from ..widgets.stat_card import StatCard
@@ -81,10 +81,7 @@ class HomePage(QWidget):
         self.list_layout.setSpacing(10)
         self.list_layout.addStretch(1)
         self.scroll_area.setWidget(self.list_container)
-        # enableTransparentBackground() only styles self.widget() if it's
-        # already set, so it must run after setWidget() - calling it
-        # before left list_container with the default (dark-on-dark-theme)
-        # QWidget palette instead of matching the page behind it.
+        # Must run after setWidget(): it only styles self.widget().
         self.scroll_area.enableTransparentBackground()
         root.addWidget(self.scroll_area, 1)
 

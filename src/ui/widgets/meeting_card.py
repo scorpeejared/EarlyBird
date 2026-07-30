@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
 from qfluentwidgets import CardWidget, CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton, isDarkTheme
 
-from src.models import Meeting
+from ...models import Meeting
 
 from .. import theme
 from .badge import make_badge
