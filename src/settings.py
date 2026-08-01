@@ -1,20 +1,24 @@
 """
-JSON-backed settings: a list of named Chrome "connections" you can pick
+JSON-backed settings: a list of named browser "connections" you can pick
 between per class, plus small UI preferences (like remembered window size).
 
 Two kinds of connection:
-- "uia" (default, Windows only, zero setup): drives a Chrome window via
+- "uia" (default, Windows only, zero setup): drives a browser window via
   Windows UI Automation. No debug port, no launcher script, nothing to
-  configure in Chrome itself.
-- "cdp": attaches over Chrome's remote-debugging port, which requires
-  starting Chrome via a generated launcher script instead of your normal
+  configure in the browser itself.
+- "cdp": attaches over the browser's remote-debugging port, which requires
+  starting it via a generated launcher script instead of your normal
   icon. More precise about *which* profile it's controlling when you have
   several open at once, at the cost of that one extra step.
+
+Each connection also records which browser it drives ("chrome", "edge",
+"brave", "opera", "opera_gx"). Connections saved before that field existed
+read back as Chrome.
 """
 import json
 from pathlib import Path
 
-from . import paths
+from . import browsers, paths
 
 DATA_DIR = paths.DATA_DIR
 SETTINGS_PATH = paths.SETTINGS_PATH
@@ -60,8 +64,24 @@ def _write(full: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(full, indent=2))
 
 
+def _with_browser(conn: dict) -> dict:
+    """A copy of the connection with a guaranteed-valid browser id.
+
+    Applied on read so a settings.json written by an older build (no browser
+    key at all) behaves exactly as it did: as Chrome.
+    """
+    normalized = dict(conn)
+    normalized["browser"] = browsers.normalize(conn.get("browser"))
+    return normalized
+
+
 def list_connections() -> list[dict]:
-    return load()["connections"]
+    return [_with_browser(c) for c in load()["connections"]]
+
+
+def connection_browser(conn: dict | None) -> str:
+    """Browser id for a connection dict, defaulting to Chrome (incl. for None)."""
+    return browsers.normalize(conn.get("browser") if conn else None)
 
 
 def get_connection(name: str) -> dict | None:
@@ -75,23 +95,33 @@ def save_connections(connections: list[dict]) -> None:
     # Merge into the full settings dict rather than overwrite it, or
     # every connection edit wipes out the other settings keys.
     full = load()
-    full["connections"] = connections
+    full["connections"] = [_with_browser(c) for c in connections]
     _write(full)
 
 
-def add_or_update_uia_connection(name: str, title_hint: str = "", profile_directory: str = "") -> None:
+def add_or_update_uia_connection(
+    name: str,
+    title_hint: str = "",
+    profile_directory: str = "",
+    browser: str = browsers.DEFAULT,
+) -> None:
     conns = [c for c in list_connections() if c["name"] != name]
     conns.append({
-        "name": name, "backend": "uia",
+        "name": name, "backend": "uia", "browser": browsers.normalize(browser),
         "title_hint": title_hint, "profile_directory": profile_directory,
     })
     save_connections(conns)
 
 
-def add_or_update_cdp_connection(name: str, profile_directory: str, port: int) -> None:
+def add_or_update_cdp_connection(
+    name: str,
+    profile_directory: str,
+    port: int,
+    browser: str = browsers.DEFAULT,
+) -> None:
     conns = [c for c in list_connections() if c["name"] != name]
     conns.append({
-        "name": name, "backend": "cdp",
+        "name": name, "backend": "cdp", "browser": browsers.normalize(browser),
         "profile_directory": profile_directory, "port": port,
     })
     save_connections(conns)

@@ -1,10 +1,13 @@
 """Add/Edit dialog for a single scheduled class."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QDate, QTime, Qt, QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtCore import (
+    QDate, QTime, Qt, QPropertyAnimation, QEasingCurve, QThread, QTimer, Signal,
+)
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
 from qfluentwidgets import (
@@ -12,10 +15,12 @@ from qfluentwidgets import (
     CaptionLabel,
     ComboBox,
     DatePicker,
+    FluentIcon,
     InfoBar,
     InfoBarPosition,
     LineEdit,
     MessageBoxBase,
+    PushButton,
     ScrollArea,
     SpinBox,
     StrongBodyLabel,
@@ -23,7 +28,7 @@ from qfluentwidgets import (
     TimePicker,
 )
 
-from ... import recurrence, settings
+from ... import recurrence, scheduler, settings
 from ...models import Meeting
 
 from ..widgets.day_picker import DayOfWeekPicker
@@ -40,6 +45,33 @@ def _field(label_text: str, widget: QWidget) -> QVBoxLayout:
     col.addWidget(CaptionLabel(label_text))
     col.addWidget(widget)
     return col
+
+
+# Test-run threads are deliberately not parented to the dialog: a join can
+# outlive the dialog that started it, and destroying a running QThread with
+# its parent crashes. They're held here until they finish instead.
+_running_test_threads: set = set()
+
+
+class _TestRunWorker(QThread):
+    """Runs one real join off the GUI thread.
+
+    The automation blocks for tens of seconds (browser launch, page load,
+    the verification pass), which would freeze the dialog if run inline.
+    """
+
+    done = Signal(bool, str)
+
+    def __init__(self, meeting: Meeting, parent=None):
+        super().__init__(parent)
+        self._meeting = meeting
+
+    def run(self) -> None:
+        try:
+            result = scheduler.perform_join(self._meeting)
+            self.done.emit(result.success, result.message)
+        except Exception as e:  # noqa: BLE001 - a crash here must not kill the dialog
+            self.done.emit(False, f"Test run failed: {e}")
 
 
 def _looks_like_google_meet_link(text: str) -> tuple[bool, str]:
@@ -143,10 +175,25 @@ class MeetingDialog(MessageBoxBase):
         self.connection_combo = ComboBox(self)
         names = settings.connection_names()
         self.connection_combo.addItems(names)
-        current_name = meeting.chrome_connection if meeting and meeting.chrome_connection else None
+        current_name = meeting.browser_connection if meeting and meeting.browser_connection else None
         default_label = current_name if current_name in names else settings.ISOLATED_PROFILE_LABEL
         self.connection_combo.setCurrentText(default_label)
         form.addLayout(_field("Join using", self.connection_combo))
+
+        # Test run: the same join the scheduler performs, on demand, so the
+        # setup can be proven before a class actually depends on it.
+        self._test_thread: _TestRunWorker | None = None
+        self.finished.connect(self._detach_test_thread)
+        self.test_button = PushButton(FluentIcon.PLAY, "Test run now", self)
+        self.test_button.clicked.connect(self._on_test_run)
+        form.addWidget(self.test_button)
+        self.test_hint = CaptionLabel(
+            "Opens the browser and joins this meeting for real, right now - "
+            "same steps as the scheduled join. Nothing is saved by testing.", self
+        )
+        self.test_hint.setWordWrap(True)
+        self.test_hint.setTextColor("#6B7280", "#9CA3AF")
+        form.addWidget(self.test_hint)
 
         self.scroll_area = ScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -193,6 +240,59 @@ class MeetingDialog(MessageBoxBase):
             position=InfoBarPosition.TOP, duration=4000, parent=self,
         )
 
+    def _on_test_run(self) -> None:
+        """Join this meeting right now, exactly as the scheduler would."""
+        if self._test_thread and self._test_thread.isRunning():
+            return
+        # validate() builds the Meeting from the form and warns about
+        # anything missing, so a test run can't be started on a bad link.
+        if not self.validate():
+            return
+
+        candidate = self.result
+        # A test must never look like a real join to the scheduler: strip the
+        # id and the joined/notified bookkeeping from the throwaway copy.
+        trial = replace(candidate, id=None, notified=False, joined=False,
+                        last_notified_date="", last_joined_date="")
+
+        self.test_button.setEnabled(False)
+        self.test_button.setText("Test run in progress...")
+        InfoBar.info(
+            title="Test run started",
+            content="Opening the browser and joining now. This can take up to a minute.",
+            orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP,
+            duration=4000, parent=self,
+        )
+
+        worker = _TestRunWorker(trial)
+        _running_test_threads.add(worker)
+        worker.finished.connect(lambda w=worker: _running_test_threads.discard(w))
+        worker.done.connect(self._on_test_finished)
+        self._test_thread = worker
+        worker.start()
+
+    def _detach_test_thread(self, *_args) -> None:
+        """Stop a still-running test from calling back into a closing dialog."""
+        if self._test_thread and self._test_thread.isRunning():
+            try:
+                self._test_thread.done.disconnect(self._on_test_finished)
+            except (RuntimeError, TypeError):
+                pass  # already disconnected, or the signal never fired
+
+    def _on_test_finished(self, success: bool, message: str) -> None:
+        self.test_button.setEnabled(True)
+        self.test_button.setText("Test run now")
+        if success:
+            InfoBar.success(
+                title="Test run succeeded",
+                content="Joined with your mic and camera settings applied. "
+                        "The scheduled join will do exactly this.",
+                orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP,
+                duration=6000, parent=self,
+            )
+        else:
+            self._warn("Test run failed", message)
+
     def validate(self) -> bool:
         title = self.title_edit.text().strip()
         link = self.link_edit.text().strip()
@@ -233,7 +333,11 @@ class MeetingDialog(MessageBoxBase):
         join_early_minutes = self.join_early_spin.value()
 
         chosen = self.connection_combo.currentText()
-        chrome_connection = "" if chosen == settings.ISOLATED_PROFILE_LABEL else chosen
+        browser_connection = "" if chosen == settings.ISOLATED_PROFILE_LABEL else chosen
+        # The connection owns the browser choice; the isolated profile is
+        # always Chrome (what it has always been).
+        chosen_conn = settings.get_connection(browser_connection) if browser_connection else None
+        browser = settings.connection_browser(chosen_conn)
 
         self.result = Meeting(
             id=self._meeting.id if self._meeting else None,
@@ -250,7 +354,8 @@ class MeetingDialog(MessageBoxBase):
             joined=self._meeting.joined if self._meeting else False,
             last_notified_date=self._meeting.last_notified_date if self._meeting else "",
             last_joined_date=self._meeting.last_joined_date if self._meeting else "",
-            chrome_connection=chrome_connection,
+            browser_connection=browser_connection,
+            browser=browser,
         )
         return True
 

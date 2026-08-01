@@ -12,15 +12,60 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 
-from . import automation, automation_uia, notifier, recurrence, settings
+from . import automation, automation_uia, browsers, notifier, recurrence, settings
 from .logging_setup import get_logger
-from .models import Meeting
+from .models import JoinResult, Meeting
 from .storage import MeetingStore
 
 logger = get_logger()
 
 POLL_INTERVAL_SECONDS = 15
 NOTIFY_LEAD_SECONDS = 5 * 60  # notify 5 minutes before a meeting
+
+
+def perform_join(m: Meeting) -> JoinResult:
+    """Run one join for this meeting through whichever backend it's set up for.
+
+    Deliberately free of bookkeeping - no notifications, no marking the
+    meeting joined - so the "Test run" button in the class dialog can reuse
+    the real join path without touching saved state. The scheduler adds the
+    bookkeeping around it.
+    """
+    conn = settings.get_connection(m.browser_connection) if m.browser_connection else None
+    if m.browser_connection and not conn:
+        logger.warning(
+            f"Connection '{m.browser_connection}' no longer exists; "
+            f"falling back to the isolated profile for '{m.title}'"
+        )
+
+    # The connection decides the browser; with no connection it's the
+    # meeting's own field, which is "chrome" for the isolated profile.
+    browser = browsers.resolve(m.browser, conn)
+
+    if conn and conn.get("backend") == "uia":
+        return automation_uia.join_google_meet_uia(
+            link=m.link,
+            mute_mic=m.mute_mic,
+            mute_camera=m.mute_camera,
+            profile_directory=conn.get("profile_directory") or None,
+            title_hint=conn.get("title_hint") or None,
+            browser=browser,
+        )
+    if conn and conn.get("backend") == "cdp":
+        return automation.join_google_meet(
+            link=m.link,
+            mute_mic=m.mute_mic,
+            mute_camera=m.mute_camera,
+            use_running_chrome=True,
+            cdp_port=conn["port"],
+            browser_name=browser,
+        )
+    return automation.join_google_meet(
+        link=m.link,
+        mute_mic=m.mute_mic,
+        mute_camera=m.mute_camera,
+        browser_name=browser,
+    )
 
 
 class SchedulerService:
@@ -57,12 +102,13 @@ class SchedulerService:
         # 1. Pre-join notifications
         for m in self.store.upcoming_for_notification(now, NOTIFY_LEAD_SECONDS):
             message = f"{m.title}\n{m.scheduled_time.strftime('%I:%M %p').lstrip('0')}"
-            if m.chrome_connection:
-                conn = settings.get_connection(m.chrome_connection)
+            if m.browser_connection:
+                conn = settings.get_connection(m.browser_connection)
+                browser_name = browsers.short_name(browsers.resolve(m.browser, conn))
                 if conn and conn.get("backend") == "cdp":
-                    message += f"\nMake sure Chrome is running via that connection's launcher ('{m.chrome_connection}')."
+                    message += f"\nMake sure {browser_name} is running via that connection's launcher ('{m.browser_connection}')."
                 elif conn and conn.get("backend") == "uia" and not conn.get("profile_directory"):
-                    message += "\nMake sure Chrome is open before then."
+                    message += f"\nMake sure {browser_name} is open before then."
             notifier.notify("🕒 Upcoming class", message)
             recurrence.mark_notified(m, now)
             self.store.update(m)
@@ -81,35 +127,7 @@ class SchedulerService:
 
     def _join_meeting(self, m: Meeting) -> None:
         try:
-            conn = settings.get_connection(m.chrome_connection) if m.chrome_connection else None
-            if m.chrome_connection and not conn:
-                logger.warning(
-                    f"Connection '{m.chrome_connection}' no longer exists; "
-                    f"falling back to the isolated profile for '{m.title}'"
-                )
-
-            if conn and conn.get("backend") == "uia":
-                result = automation_uia.join_google_meet_uia(
-                    link=m.link,
-                    mute_mic=m.mute_mic,
-                    mute_camera=m.mute_camera,
-                    profile_directory=conn.get("profile_directory") or None,
-                    title_hint=conn.get("title_hint") or None,
-                )
-            elif conn and conn.get("backend") == "cdp":
-                result = automation.join_google_meet(
-                    link=m.link,
-                    mute_mic=m.mute_mic,
-                    mute_camera=m.mute_camera,
-                    use_running_chrome=True,
-                    cdp_port=conn["port"],
-                )
-            else:
-                result = automation.join_google_meet(
-                    link=m.link,
-                    mute_mic=m.mute_mic,
-                    mute_camera=m.mute_camera,
-                )
+            result = perform_join(m)
 
             if result.success:
                 recurrence.mark_joined(m, datetime.now())

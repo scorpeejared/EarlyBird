@@ -51,6 +51,18 @@ DB_PATH = DATA_DIR / "meetings.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 
+def profile_dir_for(browser: str) -> Path:
+    """The app's own isolated profile folder for one browser.
+
+    Chrome keeps the original location so existing installs stay signed in;
+    other browsers get their own folder, since a profile written by one
+    Chromium build is not safe to hand to another.
+    """
+    if not browser or browser == "chrome":
+        return PROFILE_DIR
+    return APP_DIR / f"{browser}_profile"
+
+
 def ensure_dirs() -> Path:
     """Create the folders the app writes to. Safe to call repeatedly."""
     for directory in (DATA_DIR, LOG_DIR):

@@ -4,6 +4,7 @@ Data models shared across the app.
 from dataclasses import dataclass
 from datetime import datetime
 
+from . import browsers
 from .recurrence import is_recurring, format_schedule_summary
 
 
@@ -24,7 +25,8 @@ class Meeting:
     last_notified_date: str = ""  # recurring: ISO date of last pre-join notification
     last_joined_date: str = ""    # recurring: ISO date of last successful join
     notes: str = ""
-    chrome_connection: str = ""  # name of a settings.py connection, or "" for the isolated profile
+    browser_connection: str = ""  # name of a settings.py connection, or "" for the isolated profile
+    browser: str = browsers.DEFAULT  # "chrome" | "edge" | "brave" | "opera" | "opera_gx"
 
     def status_label(self) -> str:
         if is_recurring(self):

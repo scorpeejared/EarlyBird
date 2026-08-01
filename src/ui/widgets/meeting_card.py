@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
 
 from qfluentwidgets import CardWidget, CaptionLabel, FluentIcon, StrongBodyLabel, TransparentToolButton, isDarkTheme
 
+from ... import browsers
 from ...models import Meeting
 
 from .. import theme
@@ -55,7 +56,9 @@ class MeetingCard(CardWidget):
         title_row.addStretch(1)
         left.addLayout(title_row)
 
-        conn_label = meeting.chrome_connection or "Isolated profile"
+        conn_label = meeting.browser_connection or "Isolated profile"
+        if not browsers.is_chrome(meeting.browser):
+            conn_label = f"{conn_label} ({browsers.short_name(meeting.browser)})"
         auto_label = "Auto-join on" if meeting.auto_join else "Manual only"
         meta = f"🕒 {meeting.schedule_summary()}    🔌 {conn_label}    {auto_label}"
         meta_label = CaptionLabel(meta, self)

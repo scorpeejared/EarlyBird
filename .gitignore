@@ -15,6 +15,14 @@ dist/
 # Application data
 data/
 logs/
+launchers/
+
+# The app's own isolated browser profiles (one per browser)
+chrome_profile/
+edge_profile/
+brave_profile/
+opera_profile/
+opera_gx_profile/
 
 # OS files
 .DS_Store

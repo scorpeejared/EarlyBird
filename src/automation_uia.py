@@ -1,14 +1,17 @@
 """
 Joins a Google Meet using Windows UI Automation - the OS-level
-accessibility API - rather than Chrome's remote-debugging protocol, which
-Chrome refuses to expose for your real profile as of Chrome 136.
+accessibility API - rather than the browser's remote-debugging protocol,
+which Chrome refuses to expose for your real profile as of Chrome 136.
 
 Two ways to get a window to work with:
-1. LAUNCH mode (default): given a profile_directory, runs chrome.exe for
-   that profile with the link. Works whether Chrome is already open or not.
-2. ATTACH mode: with no profile_directory, finds an already-open Chrome
-   window (optionally matched by title) and opens a new one from it via
+1. LAUNCH mode (default): given a profile_directory, runs the browser's exe
+   for that profile with the link. Works whether it's already open or not.
+2. ATTACH mode: with no profile_directory, finds an already-open window of
+   that browser (optionally matched by title) and opens a new one from it via
    Ctrl+N. Still reachable for connections saved without a profile.
+
+Every browser-specific value (exe path, window class, process image) comes
+from browsers.py; the flow itself is identical for all of them.
 
 Windows-only. Requires pywinauto (and its pywin32 dependency).
 """
@@ -18,7 +21,7 @@ import os
 import subprocess
 import time
 
-from . import paths
+from . import browsers, paths
 from .logging_setup import get_logger
 from .models import JoinResult
 
@@ -28,28 +31,127 @@ logger = get_logger()
 
 MIC_OFF_LABELS = ["Turn off microphone"]
 CAM_OFF_LABELS = ["Turn off camera"]
+# Meet relabels the toggle once it's off, so finding these is the proof that
+# muting took effect. "Turn on microphone" is not a substring of "Turn off
+# microphone", so the contains-match used below can't confuse the two.
+MIC_CONFIRM_LABELS = ["Turn on microphone"]
+CAM_CONFIRM_LABELS = ["Turn on camera"]
 JOIN_LABELS = ["Join now", "Ask to join"]
+
+# Extra attempts per control before giving up and joining anyway.
+VERIFY_RETRIES = 2
 DISMISS_LABELS = [
     "Got it", "Dismiss", "Close", "No thanks",
     "Continue without microphone", "Continue without camera",
     "Use without an account", "Allow",
 ]
 
-CHROME_CANDIDATE_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-]
-
 _last_meet_window_handles: dict[str, int] = {}
 
+# PROCESS_QUERY_LIMITED_INFORMATION - enough to read another process's image
+# path, and granted for same-user processes without elevation.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-def _close_previous_window(key: str) -> None:
+
+def _window_process_path(handle) -> str | None:
+    """Full exe path owning this window, or None if unreadable.
+
+    The whole path, not just the file name: Opera and Opera GX are both
+    opera.exe and can only be told apart by where they're installed.
+    """
+    try:
+        import win32api
+        import win32process
+
+        _, pid = win32process.GetWindowThreadProcessId(handle)
+        process = win32api.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        try:
+            return win32process.GetModuleFileNameEx(process, 0)
+        finally:
+            win32api.CloseHandle(process)
+    except Exception:  # noqa: BLE001 - identification is best-effort
+        return None
+
+
+def _window_belongs_to(handle, browser: str) -> bool:
+    """Whether this window is really one of `browser`'s.
+
+    Chrome_WidgetWin_1 is shared by every Chromium browser *and* every Electron
+    app (VS Code, Discord), so the class alone can't tell Chrome from Edge. The
+    owning process can.
+    """
+    if not browsers.process_images(browser):
+        return True
+    path = _window_process_path(handle)
+    if path is None:
+        # Unreadable owner (rare). Chrome keeps its historic permissive
+        # behaviour; another browser must not grab an unidentifiable window.
+        return browsers.is_chrome(browser)
+    return browsers.matches_executable(browser, path)
+
+
+_logged_window_classes: set[str] = set()
+
+
+def _windows_owned_by(browser: str, class_name: str | None) -> list:
+    """Top-level windows owned by this browser, optionally class-filtered."""
+    from pywinauto import Desktop
+
+    desktop = Desktop(backend="uia")
+    found = desktop.windows(class_name=class_name) if class_name else desktop.windows()
+    windows = []
+    for w in found:
+        try:
+            if _window_belongs_to(w.handle, browser):
+                windows.append(w)
+        except Exception:  # noqa: BLE001 - some windows vanish mid-enum
+            continue
+    return windows
+
+
+def _browser_windows(browser: str) -> list:
+    """Every open top-level window belonging to this browser.
+
+    The class filter is only a speed-up. For a browser whose window class
+    hasn't been confirmed on a live window, an empty result falls back to a
+    sweep of every top-level window matched on the owning process - so a
+    wrong class guess degrades to "slightly slower", never "finds nothing".
+    """
+    try:
+        windows = _windows_owned_by(browser, browsers.window_class(browser))
+        if not windows and not browsers.window_class_is_verified(browser):
+            windows = _windows_owned_by(browser, None)
+            _log_observed_classes(browser, windows)
+        return windows
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not enumerate {browsers.short_name(browser)} windows: {e}")
+        return []
+
+
+def _log_observed_classes(browser: str, windows: list) -> None:
+    """Record the real window class the first time one turns up this way."""
+    for w in windows:
+        try:
+            import win32gui
+            observed = win32gui.GetClassName(w.handle)
+        except Exception:  # noqa: BLE001
+            continue
+        key = f"{browser}:{observed}"
+        if key not in _logged_window_classes:
+            _logged_window_classes.add(key)
+            logger.info(
+                f"{browsers.short_name(browser)} window class is '{observed}' "
+                f"(expected '{browsers.window_class(browser)}'); found via the "
+                "process-based fallback sweep"
+            )
+
+
+def _close_previous_window(key: str, browser: str = browsers.DEFAULT) -> None:
     handle = _last_meet_window_handles.pop(key, None)
     if handle is None:
         return
     try:
-        from pywinauto import Desktop
-        for w in Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1"):
+        for w in _browser_windows(browser):
             try:
                 if w.handle == handle:
                     w.close()
@@ -70,7 +172,7 @@ def _require_pywinauto():
 
 
 def normalize_profile_directory(value: str) -> str:
-    """Reduce a pasted Chrome 'Profile Path' to just its last folder name."""
+    """Reduce a pasted 'Profile Path' (chrome://version and friends) to its last folder."""
     value = value.strip().strip('"').rstrip("\\/")
     if "\\" in value or "/" in value:
         normalized = value.replace("/", "\\").split("\\")[-1]
@@ -79,93 +181,94 @@ def normalize_profile_directory(value: str) -> str:
     return value
 
 
-def _find_chrome_exe() -> str | None:
-    for p in CHROME_CANDIDATE_PATHS:
-        if os.path.exists(p):
-            return p
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        candidate = os.path.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe")
-        if os.path.exists(candidate):
-            return candidate
-    return None
+def normalize_profile_setting(value: str, browser: str = browsers.DEFAULT) -> str:
+    """Clean up whatever the profile field holds for this browser.
+
+    Chromium browsers store a folder *name* inside User Data, so a pasted full
+    path gets reduced to its last folder. Opera stores the full path of a whole
+    profile folder, which must survive intact.
+    """
+    if browsers.uses_single_profile_dir(browser):
+        return value.strip().strip('"').rstrip("\\/")
+    return normalize_profile_directory(value)
 
 
-def list_chrome_windows() -> list[str]:
+def _find_browser_exe(browser: str = browsers.DEFAULT) -> str | None:
+    return browsers.find_executable(browser)
+
+
+def list_browser_windows(browser: str = browsers.DEFAULT) -> list[str]:
+    """Titles of this browser's open windows (Chrome unless told otherwise)."""
     if not _require_pywinauto():
         return []
-    from pywinauto import Desktop
     titles = []
-    try:
-        for w in Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1"):
-            try:
-                t = w.window_text()
-                if t:
-                    titles.append(t)
-            except Exception:  # noqa: BLE001 - some windows vanish mid-enum
-                continue
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Could not enumerate Chrome windows: {e}")
+    for w in _browser_windows(browser):
+        try:
+            t = w.window_text()
+            if t:
+                titles.append(t)
+        except Exception:  # noqa: BLE001 - some windows vanish mid-enum
+            continue
     return titles
 
 
-def _chrome_window_handles() -> set:
-    from pywinauto import Desktop
+def _browser_window_handles(browser: str = browsers.DEFAULT) -> set:
     handles = set()
-    try:
-        for w in Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1"):
-            try:
-                handles.add(w.handle)
-            except Exception:  # noqa: BLE001
-                continue
-    except Exception:  # noqa: BLE001
-        pass
+    for w in _browser_windows(browser):
+        try:
+            handles.add(w.handle)
+        except Exception:  # noqa: BLE001
+            continue
     return handles
 
 
-def _wait_for_new_window(before_handles: set, timeout_s: float = 5.0):
-    from pywinauto import Desktop
+def _wait_for_new_window(before_handles: set, timeout_s: float = 5.0,
+                         browser: str = browsers.DEFAULT):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        try:
-            for w in Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1"):
-                try:
-                    if w.handle not in before_handles:
-                        return w
-                except Exception:  # noqa: BLE001
-                    continue
-        except Exception:  # noqa: BLE001
-            pass
+        for w in _browser_windows(browser):
+            try:
+                if w.handle not in before_handles:
+                    return w
+            except Exception:  # noqa: BLE001
+                continue
         time.sleep(0.2)
     return None
 
 
-def _foreground_chrome_window():
+def _foreground_browser_window(browser: str = browsers.DEFAULT):
     try:
         import win32gui
         from pywinauto import Desktop
         hwnd = win32gui.GetForegroundWindow()
-        if not hwnd or win32gui.GetClassName(hwnd) != "Chrome_WidgetWin_1":
+        if not hwnd:
+            return None
+        # The class check is just a cheap pre-filter, and only trustworthy for
+        # a browser whose class was confirmed live; ownership is the real test.
+        if (browsers.window_class_is_verified(browser)
+                and win32gui.GetClassName(hwnd) != browsers.window_class(browser)):
+            return None
+        if not _window_belongs_to(hwnd, browser):
             return None
         return Desktop(backend="uia").window(handle=hwnd)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _wait_for_target_window(before_handles: set, timeout_s: float):
+def _wait_for_target_window(before_handles: set, timeout_s: float,
+                            browser: str = browsers.DEFAULT):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        handles = _chrome_window_handles()
+        handles = _browser_window_handles(browser)
         new_handles = handles - before_handles
         if new_handles:
-            from pywinauto import Desktop
-            for w in Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1"):
+            for w in _browser_windows(browser):
                 try:
                     if w.handle in new_handles:
                         return w, "new_window"
                 except Exception:  # noqa: BLE001
                     continue
-        fg = _foreground_chrome_window()
+        fg = _foreground_browser_window(browser)
         if fg is not None:
             try:
                 if fg.handle in before_handles:
@@ -176,10 +279,8 @@ def _wait_for_target_window(before_handles: set, timeout_s: float):
     return None, None
 
 
-def _find_window(title_hint: str | None):
-    from pywinauto import Desktop
-    desktop = Desktop(backend="uia")
-    candidates = desktop.windows(class_name="Chrome_WidgetWin_1")
+def _find_window(title_hint: str | None, browser: str = browsers.DEFAULT):
+    candidates = _browser_windows(browser)
     if not candidates:
         return None
     if not title_hint:
@@ -224,6 +325,48 @@ def _find_button_by_names(window, names: list[str], timeout_s: int):
     return None
 
 
+def _turn_off_control_uia(
+    window,
+    what: str,
+    off_labels: list[str],
+    confirm_labels: list[str],
+    control_timeout_s: int,
+    verify: bool,
+) -> bool:
+    """Click a control off and read the tree back to confirm it went off.
+
+    click_input() moves the real cursor, so a click can land on a control
+    that has just shifted, or arrive while the page is still settling. The
+    state is read back rather than assumed - and only a control still
+    offering "Turn off ..." is clicked again, since re-clicking one that
+    already went off would turn it back on.
+    """
+    btn = _find_button_by_names(window, off_labels, control_timeout_s)
+    if btn:
+        btn.click_input()
+        logger.info(f"Clicked {what.lower()} toggle (UI Automation)")
+    else:
+        logger.warning(
+            f"{what} toggle not found via UI Automation (may already be off, or selector drifted)")
+
+    if not verify:
+        return bool(btn)
+
+    for attempt in range(VERIFY_RETRIES + 1):
+        if _find_button_by_names(window, confirm_labels, timeout_s=2):
+            logger.info(f"Verified {what.lower()} is off")
+            return True
+        if attempt == VERIFY_RETRIES:
+            break
+        logger.warning(f"{what} still on after attempt {attempt + 1}; trying again")
+        retry = _find_button_by_names(window, off_labels, timeout_s=3)
+        if retry:
+            retry.click_input()
+
+    logger.warning(f"Could not confirm {what.lower()} is off - joining anyway")
+    return False
+
+
 def join_google_meet_uia(
     link: str,
     mute_mic: bool = True,
@@ -232,6 +375,8 @@ def join_google_meet_uia(
     title_hint: str | None = None,
     nav_timeout_s: int = 45,
     control_timeout_s: int = 15,
+    browser: str = browsers.DEFAULT,
+    verify_controls: bool = True,
 ) -> JoinResult:
     if not _require_pywinauto():
         return JoinResult(
@@ -239,38 +384,51 @@ def join_google_meet_uia(
             message="pywinauto is not installed. Run: pip install pywinauto pywin32",
         )
 
-    connection_key = profile_directory or title_hint or "_default_"
+    browser = browsers.normalize(browser)
+    label = browsers.short_name(browser)
+    exe_name = (browsers.process_images(browser) or ("the browser",))[0]
+    version_page = browsers.version_page(browser)
+
+    # Keyed by browser too: an Edge and a Chrome connection naming the same
+    # profile folder are still two different windows to track.
+    connection_key = f"{browser}:{profile_directory or title_hint or '_default_'}"
     needs_manual_navigation = True  # launch mode navigates itself; Ctrl+N doesn't
     how = "new_window"  # Ctrl+N always makes one; launch mode overrides this below
 
     try:
-        _close_previous_window(connection_key)
-        before_handles = _chrome_window_handles()
+        _close_previous_window(connection_key, browser)
+        before_handles = _browser_window_handles(browser)
 
         if profile_directory:
-            profile_directory = normalize_profile_directory(profile_directory)
-            chrome_exe = _find_chrome_exe()
-            if not chrome_exe:
+            profile_directory = normalize_profile_setting(profile_directory, browser)
+            browser_exe = _find_browser_exe(browser)
+            if not browser_exe:
                 return JoinResult(
                     success=False,
-                    message="Could not find chrome.exe in standard install locations.",
+                    message=f"Could not find {exe_name} in standard install locations.",
                 )
             logger.info(
-                f"Launching Chrome profile '{profile_directory}' with the meeting link "
-                "directly (Chrome decides: new tab if already open, new window if not)"
+                f"Launching {label} profile '{profile_directory}' with the meeting link "
+                f"directly ({label} decides: new tab if already open, new window if not)"
             )
+            # --profile-directory for Chromium's named profiles, --user-data-dir
+            # for Opera's one-folder-per-install layout.
             subprocess.Popen([
-                chrome_exe,
-                f"--profile-directory={profile_directory}",
+                browser_exe,
+                *browsers.profile_launch_args(browser, profile_directory),
                 link,
             ])
-            meet_window, how = _wait_for_target_window(before_handles, timeout_s=nav_timeout_s)
+            meet_window, how = _wait_for_target_window(
+                before_handles, timeout_s=nav_timeout_s, browser=browser
+            )
             if meet_window is None:
+                what = ("profile folder path" if browsers.uses_single_profile_dir(browser)
+                        else "profile directory name")
                 return JoinResult(
                     success=False,
                     message=(
-                        f"Chrome for profile '{profile_directory}' did not respond in time. "
-                        "Double check the profile directory name via chrome://version."
+                        f"{label} for profile '{profile_directory}' did not respond in time. "
+                        f"Double check the {what} via {version_page}."
                     ),
                 )
             logger.info(
@@ -280,26 +438,26 @@ def join_google_meet_uia(
             needs_manual_navigation = False  # Chrome already loaded the link for us
         else:
             # Attach mode: spawn a new window from an existing one via
-            # Ctrl+N. Requires Chrome to already be open and matching.
-            source = _find_window(title_hint)
+            # Ctrl+N. Requires the browser to already be open and matching.
+            source = _find_window(title_hint, browser)
             if source is None:
                 return JoinResult(
                     success=False,
                     message=(
-                        "No open Chrome window found"
+                        f"No open {label} window found"
                         + (f" matching '{title_hint}'" if title_hint else "")
                         + ", and no profile directory is configured to launch one. "
                         "Add a profile directory to this connection for a more "
-                        "reliable setup that doesn't depend on Chrome already being open."
+                        f"reliable setup that doesn't depend on {label} already being open."
                     ),
                 )
-            logger.info(f"Attaching to existing Chrome window via UI Automation: '{source.window_text()}'")
+            logger.info(f"Attaching to existing {label} window via UI Automation: '{source.window_text()}'")
             source.set_focus()
             time.sleep(0.3)
             source.type_keys("^n", pause=0.05)
-            meet_window = _wait_for_new_window(before_handles, timeout_s=5.0)
+            meet_window = _wait_for_new_window(before_handles, timeout_s=5.0, browser=browser)
             if meet_window is None:
-                return JoinResult(success=False, message="New Chrome window did not appear in time.")
+                return JoinResult(success=False, message=f"New {label} window did not appear in time.")
 
         meet_window.set_focus()
         time.sleep(0.5)
@@ -338,22 +496,26 @@ def join_google_meet_uia(
         _find_button_by_names(window, DISMISS_LABELS, timeout_s=2)
 
         if mute_mic:
-            btn = _find_button_by_names(window, MIC_OFF_LABELS, control_timeout_s)
-            if btn:
-                btn.click_input()
-                logger.info("Clicked microphone toggle (UI Automation)")
-            else:
-                logger.warning("Mic toggle not found via UI Automation (may already be off, or selector drifted)")
+            _turn_off_control_uia(window, "Microphone", MIC_OFF_LABELS, MIC_CONFIRM_LABELS,
+                                  control_timeout_s, verify_controls)
 
         if mute_camera:
-            btn = _find_button_by_names(window, CAM_OFF_LABELS, control_timeout_s)
-            if btn:
-                btn.click_input()
-                logger.info("Clicked camera toggle (UI Automation)")
-            else:
-                logger.warning("Camera toggle not found via UI Automation (may already be off, or selector drifted)")
+            _turn_off_control_uia(window, "Camera", CAM_OFF_LABELS, CAM_CONFIRM_LABELS,
+                                  control_timeout_s, verify_controls)
 
         _find_button_by_names(window, DISMISS_LABELS, timeout_s=2)
+
+        # Dismissing a dialog can hand focus back to a control and flip it on,
+        # so anything that drifted gets one more correction before joining.
+        if verify_controls:
+            if mute_mic and not _find_button_by_names(window, MIC_CONFIRM_LABELS, timeout_s=1):
+                logger.warning("Microphone came back on before joining; correcting")
+                _turn_off_control_uia(window, "Microphone", MIC_OFF_LABELS, MIC_CONFIRM_LABELS,
+                                      control_timeout_s, verify_controls)
+            if mute_camera and not _find_button_by_names(window, CAM_CONFIRM_LABELS, timeout_s=1):
+                logger.warning("Camera came back on before joining; correcting")
+                _turn_off_control_uia(window, "Camera", CAM_OFF_LABELS, CAM_CONFIRM_LABELS,
+                                      control_timeout_s, verify_controls)
 
         join_btn = _find_button_by_names(window, JOIN_LABELS, control_timeout_s)
         if not join_btn:

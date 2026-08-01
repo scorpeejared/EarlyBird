@@ -10,10 +10,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from . import paths, recurrence
+from . import browsers, paths, recurrence
 from .models import Meeting
 
 DB_PATH = paths.DB_PATH
+
+# PRAGMA user_version marks one-time data moves as done. Bumped to 1 when
+# chrome_connection's contents have landed in browser_connection, so the
+# copy in _migrate_browser_columns() can never re-run and resurrect a value
+# the user has since cleared.
+_SCHEMA_VERSION_BROWSER_FIELDS = 1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meetings (
@@ -31,8 +37,9 @@ CREATE TABLE IF NOT EXISTS meetings (
     last_notified_date TEXT NOT NULL DEFAULT '',
     last_joined_date TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
-    chrome_connection TEXT NOT NULL DEFAULT '',
-    join_early_minutes INTEGER NOT NULL DEFAULT 0
+    browser_connection TEXT NOT NULL DEFAULT '',
+    join_early_minutes INTEGER NOT NULL DEFAULT 0,
+    browser TEXT NOT NULL DEFAULT 'chrome'
 );
 """
 
@@ -54,11 +61,59 @@ class MeetingStore:
             conn.execute(_SCHEMA)
             self._migrate(conn)
 
+    @staticmethod
+    def _columns(conn: sqlite3.Connection) -> set[str]:
+        return {row["name"] for row in conn.execute("PRAGMA table_info(meetings)")}
+
+    @staticmethod
+    def _user_version(conn: sqlite3.Connection) -> int:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def _migrate_browser_columns(self, conn: sqlite3.Connection) -> None:
+        """Move chrome_connection -> browser_connection and add browser.
+
+        A real column rename, not a fresh column: every saved class keeps the
+        connection it was already pointing at. Rows that predate the browser
+        field become "chrome", which is the code path they were running before.
+        """
+        cols = self._columns(conn)
+
+        if "chrome_connection" in cols and "browser_connection" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE meetings RENAME COLUMN chrome_connection TO browser_connection"
+                )
+                cols = self._columns(conn)
+            except sqlite3.OperationalError:
+                # RENAME COLUMN needs SQLite 3.25+. On anything older, fall
+                # through to the add-and-copy path below.
+                pass
+
+        if "browser_connection" not in cols:
+            conn.execute("ALTER TABLE meetings ADD COLUMN browser_connection TEXT NOT NULL DEFAULT ''")
+            cols = self._columns(conn)
+            if "chrome_connection" in cols and self._user_version(conn) < _SCHEMA_VERSION_BROWSER_FIELDS:
+                conn.execute("UPDATE meetings SET browser_connection = chrome_connection")
+
+        if self._user_version(conn) < _SCHEMA_VERSION_BROWSER_FIELDS:
+            # Can't parameterise a PRAGMA value, hence the f-string over an int constant.
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_BROWSER_FIELDS}")
+
+        if "browser" not in cols:
+            conn.execute(
+                f"ALTER TABLE meetings ADD COLUMN browser TEXT NOT NULL DEFAULT '{browsers.DEFAULT}'"
+            )
+        # Blank/NULL browser values would fall through to an unknown-browser
+        # branch later; pin them to the default instead.
+        conn.execute(
+            "UPDATE meetings SET browser=? WHERE browser IS NULL OR TRIM(browser)=''",
+            (browsers.DEFAULT,),
+        )
+
     def _migrate(self, conn: sqlite3.Connection) -> None:
         """Add columns introduced after the initial release."""
-        existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(meetings)")}
-        if "chrome_connection" not in existing_cols:
-            conn.execute("ALTER TABLE meetings ADD COLUMN chrome_connection TEXT NOT NULL DEFAULT ''")
+        self._migrate_browser_columns(conn)
+        existing_cols = self._columns(conn)
         if "recurring_days" not in existing_cols:
             conn.execute("ALTER TABLE meetings ADD COLUMN recurring_days TEXT NOT NULL DEFAULT ''")
         if "last_notified_date" not in existing_cols:
@@ -95,17 +150,18 @@ class MeetingStore:
                 """INSERT INTO meetings
                    (title, link, scheduled_time, auto_join, mute_mic, mute_camera,
                     recurring, recurring_days, notified, joined,
-                    last_notified_date, last_joined_date, notes, chrome_connection,
-                    join_early_minutes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    last_notified_date, last_joined_date, notes, browser_connection,
+                    join_early_minutes, browser)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     m.title, m.link, m.scheduled_time.isoformat(),
                     int(m.auto_join), int(m.mute_mic), int(m.mute_camera),
                     m.recurring, m.recurring_days,
                     int(m.notified), int(m.joined),
                     m.last_notified_date, m.last_joined_date,
-                    m.notes, m.chrome_connection,
+                    m.notes, m.browser_connection,
                     int(m.join_early_minutes or 0),
+                    browsers.normalize(m.browser),
                 ),
             )
             return cur.lastrowid
@@ -118,7 +174,7 @@ class MeetingStore:
                 """UPDATE meetings SET title=?, link=?, scheduled_time=?, auto_join=?,
                    mute_mic=?, mute_camera=?, recurring=?, recurring_days=?,
                    notified=?, joined=?, last_notified_date=?, last_joined_date=?,
-                   notes=?, chrome_connection=?, join_early_minutes=?
+                   notes=?, browser_connection=?, join_early_minutes=?, browser=?
                    WHERE id=?""",
                 (
                     m.title, m.link, m.scheduled_time.isoformat(),
@@ -126,8 +182,9 @@ class MeetingStore:
                     m.recurring, m.recurring_days,
                     int(m.notified), int(m.joined),
                     m.last_notified_date, m.last_joined_date,
-                    m.notes, m.chrome_connection,
-                    int(m.join_early_minutes or 0), m.id,
+                    m.notes, m.browser_connection,
+                    int(m.join_early_minutes or 0),
+                    browsers.normalize(m.browser), m.id,
                 ),
             )
 
@@ -171,8 +228,9 @@ class MeetingStore:
             last_notified_date=row["last_notified_date"] if "last_notified_date" in keys else "",
             last_joined_date=row["last_joined_date"] if "last_joined_date" in keys else "",
             notes=row["notes"],
-            chrome_connection=row["chrome_connection"],
+            browser_connection=row["browser_connection"] if "browser_connection" in keys else "",
             join_early_minutes=row["join_early_minutes"] if "join_early_minutes" in keys else 0,
+            browser=browsers.normalize(row["browser"] if "browser" in keys else None),
         )
 
 

@@ -6,7 +6,7 @@ side; the build workflow refuses to publish a tag that disagrees with it.
 """
 from __future__ import annotations
 
-__version__ = "2.0.2"
+__version__ = "2.3.2"
 
 
 def parse(version_string: str) -> tuple[int, ...]:
