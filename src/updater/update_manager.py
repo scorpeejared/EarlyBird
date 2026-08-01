@@ -122,20 +122,19 @@ class UpdateManager:
 
     # ---------- installing ----------
 
-    def download_and_install(
-        self,
-        release: ReleaseInfo,
-        on_progress: Callable[[int, int], None] | None = None,
-    ) -> bool:
-        """Download the release asset, stage it, and (on a packaged
-        build) launch the detached updater process.
+    def start_update(self, release: ReleaseInfo) -> bool:
+        """Hand the whole update over to the updater and get out of the way.
 
-        Returns True when a relaunch is staged, meaning the caller should
-        now close the app - something will bring it back. Returns False
-        for a dev checkout, where the download is verified but there's no
-        installed .exe to swap: quitting then would close the app for
-        good. Never closes the app itself, so the UI layer keeps control
-        of its own shutdown path.
+        The app no longer downloads anything: it copies itself to a temp
+        folder and starts that copy in updater mode, which downloads, stages,
+        hands the swap to the new build, and relaunches. So this returns
+        almost immediately.
+
+        Returns True when the updater is running, meaning the caller should
+        now close the app - something will bring it back. Returns False for a
+        dev checkout, where there is no installed .exe to replace and quitting
+        would just close the app for good. Never closes the app itself, so the
+        UI layer keeps control of its own shutdown path.
         """
         asset = release.pick_asset(self.asset_name_hint)
         if asset is None:
@@ -143,65 +142,36 @@ class UpdateManager:
                 f"No release asset matched '{self.asset_name_hint}' for {release.tag}"
             )
 
-        self._report(f"Downloading {release.tag}...")
-        downloaded_path = downloader.download_asset(asset, on_progress=on_progress)
-
-        self._report("Preparing update...")
-        stage_dir = installer.stage_update(downloaded_path)
-
         if not paths.is_frozen():
             logger.warning(
-                "Running from source (not a packaged build) - staged the update at %s "
-                "but skipping the file swap, since there's no installed .exe to replace.",
-                stage_dir,
+                "Running from source (not a packaged build) - there is no installed "
+                ".exe to replace, so the updater is not started."
             )
-            self._report(f"Update downloaded to {stage_dir} (dev mode: not auto-installed)")
+            self._report("Update available, but self-update only works in a packaged build")
             return False
 
         current_exe = installer.get_current_exe_path()
         install_dir = installer.get_install_dir()
-        staged_exe = installer.find_staged_exe(stage_dir, preferred_name=current_exe.name)
 
-        # A onedir build's application code lives in _internal/, not in
-        # the thin exe stub. Swapping only the exe leaves the old
-        # _internal/ in place and the app silently runs the old version.
-        installed_has_internal = (install_dir / "_internal").is_dir()
-        staged_has_internal = (stage_dir / "_internal").is_dir()
-        if installed_has_internal and not staged_has_internal:
-            raise RuntimeError(
-                "This is a onedir build (it has an _internal/ folder), but the "
-                f"downloaded release asset '{asset.name}' only contained a bare "
-                ".exe with no _internal/ folder. The release asset needs to be a "
-                ".zip of the whole dist/EarlyBird/ folder (exe + _internal/), not "
-                "just the .exe by itself - otherwise the app's actual code never "
-                "gets updated even though the launcher exe does."
-            )
-
-        # Relaunch from the install directory, always. The updater *moves* the
-        # staged files into place and then deletes the staging folder, so a
-        # path inside it is gone by the time the relaunch runs - which is what
-        # happened when the installed exe had been renamed (a browser's
-        # "EarlyBird (1).exe") and the names didn't match.
-        relaunch_target = install_dir / staged_exe.name
-
-        # Run the *downloaded* build as the updater, from its own temp folder.
-        # It is the new version, so the updater logic that applies an install
-        # is always the one that just shipped - a fix here reaches users on the
-        # next update rather than the one after it. Copying it out of the
-        # staging folder also leaves that folder free to be moved wholesale.
+        # The updater is a copy of *this* binary: the new one doesn't exist
+        # until it has been downloaded. It hands the actual swap to what it
+        # downloads, so the install step still runs the newest shipped code.
         runner_dir = downloader.staging_dir() / "runner"
         shutil.rmtree(runner_dir, ignore_errors=True)
         runner_dir.mkdir(parents=True, exist_ok=True)
-        runner_exe = runner_dir / staged_exe.name
-        shutil.copy2(staged_exe, runner_exe)
+        runner_exe = runner_dir / current_exe.name
+        shutil.copy2(current_exe, runner_exe)
 
         command = [
             str(runner_exe),
-            apply_update.FLAG,
+            apply_update.DOWNLOAD_FLAG,
             "--wait-pid", str(os.getpid()),
             "--install-dir", str(install_dir),
-            "--staged-dir", str(stage_dir),
-            "--relaunch-name", relaunch_target.name,
+            "--relaunch-name", current_exe.name,
+            "--url", asset.download_url,
+            "--asset-name", asset.name,
+            "--asset-size", str(asset.size_bytes or 0),
+            "--version", release.tag,
         ]
         # CREATE_NEW_PROCESS_GROUP unties the updater from this process's
         # lifetime and signals; it has to outlive us to do its job.
@@ -216,7 +186,7 @@ class UpdateManager:
         logger.info("Launched updater: %s", " ".join(command))
 
         self.last_update_log_path = paths.LOG_DIR / logging_setup.LOG_FILENAME
-        self._report("Update staged - restarting...")
+        self._report(f"Updating to {release.tag} - restarting...")
         return True
 
     def _report(self, message: str) -> None:

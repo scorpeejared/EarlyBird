@@ -29,7 +29,7 @@ def main() -> int:
     # %TEMP% to replace the installed one. Handled before anything else so no
     # database, scheduler or tray icon is ever touched - and before importing
     # MainWindow, which would drag in the whole UI stack it never uses.
-    if apply_update.FLAG in sys.argv[1:]:
+    if apply_update.is_updater_invocation(sys.argv[1:]):
         return apply_update.main(sys.argv[1:])
 
     from src.ui.main_window import MainWindow

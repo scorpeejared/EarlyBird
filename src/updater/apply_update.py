@@ -26,13 +26,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import downloader
+from . import downloader, installer
+from .github_release import ReleaseAsset
 from .. import logging_setup, paths
 from ..logging_setup import get_logger
 
 logger = get_logger()
 
+# Stage 2: swap the staged files in and relaunch. Run from the *new* build.
 FLAG = "--apply-update"
+# Stage 1: download and stage, then hand stage 2 to the build it just fetched.
+DOWNLOAD_FLAG = "--download-update"
 
 # Never replaced by an update: these are the user's, not the build's.
 PRESERVE_NAMES = {"data", "logs", "settings.json"}
@@ -40,9 +44,23 @@ PRESERVE_NAMES = {"data", "logs", "settings.json"}
 # How long to wait for the app to close before giving up and trying anyway.
 WAIT_TIMEOUT_S = 60
 
+# How long stage 1 waits for stage 2 to finish before assuming the new build
+# is broken. Stage 2 only waits for the app to close and moves a few files.
+SWAP_TIMEOUT_S = 150
+
 
 class UpdateError(Exception):
     """Raised when the swap could not be completed; the old version is intact."""
+
+
+def is_updater_invocation(argv: list[str]) -> bool:
+    """True when these arguments mean 'run as the updater, not as the app'.
+
+    Both stages must be listed here: dispatching on only one of them silently
+    starts the normal app instead, which looks like a working update until you
+    notice nothing was replaced.
+    """
+    return FLAG in argv or DOWNLOAD_FLAG in argv
 
 
 # --------------------------------------------------------------- environment
@@ -211,13 +229,26 @@ def cleanup_stale_updates() -> None:
 # ------------------------------------------------------------ the updater run
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Arguments for either stage; which one is decided by the flag present."""
     parser = argparse.ArgumentParser(prog="EarlyBird", add_help=False)
     parser.add_argument(FLAG, action="store_true", dest="apply_update")
+    parser.add_argument(DOWNLOAD_FLAG, action="store_true", dest="download_update")
     parser.add_argument("--wait-pid", type=int, required=True)
     parser.add_argument("--install-dir", type=Path, required=True)
-    parser.add_argument("--staged-dir", type=Path, required=True)
     parser.add_argument("--relaunch-name", required=True)
-    return parser.parse_args(argv)
+    # stage 2 only
+    parser.add_argument("--staged-dir", type=Path)
+    # stage 1 only
+    parser.add_argument("--url")
+    parser.add_argument("--asset-name")
+    parser.add_argument("--asset-size", type=int, default=0)
+    parser.add_argument("--version", default="")
+    args = parser.parse_args(argv)
+    if args.apply_update and args.staged_dir is None:
+        parser.error("--apply-update requires --staged-dir")
+    if args.download_update and not (args.url and args.asset_name):
+        parser.error("--download-update requires --url and --asset-name")
+    return args
 
 
 def run(args: argparse.Namespace, on_status=None) -> None:
@@ -248,13 +279,102 @@ def run(args: argparse.Namespace, on_status=None) -> None:
     status("Update complete")
 
 
+def run_download(args: argparse.Namespace, on_status=None, on_progress=None) -> None:
+    """Stage 1: fetch the new build, then let *it* perform the swap.
+
+    This runs from a copy of the *installed* binary - the new one doesn't
+    exist yet - but it hands the actual file swap to what it just downloaded.
+    That keeps the install logic that runs equal to the newest shipped one,
+    and doubles as a smoke test: a build that can't start never gets the
+    chance to replace a working install. If stage 2 doesn't report success,
+    nothing has been replaced and the current version is reopened instead.
+    """
+
+    def status(message: str) -> None:
+        logger.info(message)
+        if on_status:
+            on_status(message)
+
+    status("Downloading update...")
+    asset = ReleaseAsset(name=args.asset_name, download_url=args.url,
+                         size_bytes=args.asset_size or 0)
+    downloaded = downloader.download_asset(asset, on_progress=on_progress)
+
+    status("Preparing update...")
+    stage_dir = installer.stage_update(downloaded)
+    staged_exe = installer.find_staged_exe(stage_dir, preferred_name=args.relaunch_name)
+
+    # A onedir build's application code lives in _internal/, not in the thin
+    # exe stub. Swapping only the exe would leave the old _internal/ in place
+    # and the app would silently keep running the old version.
+    if (args.install_dir / "_internal").is_dir() and not (stage_dir / "_internal").is_dir():
+        raise UpdateError(
+            f"This is a onedir install, but the release asset '{args.asset_name}' "
+            "contained only a bare .exe with no _internal/ folder. The asset needs "
+            "to be a .zip of the whole dist/EarlyBird/ folder."
+        )
+
+    # Stage 2 runs from its own folder: it moves the staged files into place,
+    # and a running executable can't move itself.
+    swapper_dir = downloader.staging_dir() / "swapper"
+    shutil.rmtree(swapper_dir, ignore_errors=True)
+    swapper_dir.mkdir(parents=True, exist_ok=True)
+    swapper_exe = swapper_dir / staged_exe.name
+    shutil.copy2(staged_exe, swapper_exe)
+
+    command = [
+        str(swapper_exe), FLAG,
+        "--wait-pid", str(args.wait_pid),
+        "--install-dir", str(args.install_dir),
+        "--staged-dir", str(stage_dir),
+        "--relaunch-name", args.relaunch_name,
+    ]
+    status("Installing update...")
+    logger.info("Handing off to the new build: %s", " ".join(command))
+    creationflags = 0x00000200 if sys.platform == "win32" else 0
+    swapper = subprocess.Popen(
+        command, cwd=str(swapper_dir), env=sanitised_environment(),
+        creationflags=creationflags, close_fds=True,
+    )
+
+    try:
+        exit_code = swapper.wait(timeout=SWAP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        swapper.kill()
+        raise UpdateError(
+            "The new version did not finish installing in time. Nothing has "
+            "been replaced, so your current version is untouched."
+        ) from None
+
+    if exit_code != 0:
+        raise UpdateError(
+            f"The new version could not install itself (exit code {exit_code}). "
+            "Your current version is untouched."
+        )
+    status("Update complete")
+
+
+def recover(args: argparse.Namespace) -> None:
+    """Stage 2 never succeeded, so nothing was replaced - reopen what's there."""
+    try:
+        relaunch(args.install_dir / args.relaunch_name)
+    except OSError as e:  # noqa: BLE001 - already reporting a failure
+        logger.error("Could not reopen the current version: %s", e)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     logging_setup.configure()
-    logger.info("=== updater started (pid %s, waiting on %s) ===",
-                os.getpid(), args.wait_pid)
+    stage = "download" if args.download_update else "apply"
+    logger.info("=== updater started (%s stage, pid %s, waiting on %s) ===",
+                stage, os.getpid(), args.wait_pid)
 
     # Imported here so the module stays importable (and testable) without Qt.
     from .updater_window import run_with_window
 
-    return run_with_window(args, run, paths.LOG_DIR / logging_setup.LOG_FILENAME)
+    log_path = paths.LOG_DIR / logging_setup.LOG_FILENAME
+    if args.download_update:
+        return run_with_window(args, run_download, log_path,
+                               title_version=args.version,
+                               show_progress=True, on_failure=recover)
+    return run_with_window(args, run, log_path)

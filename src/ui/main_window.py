@@ -26,7 +26,6 @@ from .pages.connections_page import ConnectionsPage
 from .pages.home_page import HomePage
 from .pages.settings_page import SettingsPage
 from .theme import apply_theme
-from .widgets.update_progress_dialog import UpdateProgressDialog
 from .widgets.update_toast import UpdateToast
 
 APP_TITLE = "EarlyBird 🐦"
@@ -47,7 +46,6 @@ class _EventBridge(QObject):
     status_changed = Signal(str)
     update_available = Signal(object)
     quit_requested = Signal()
-    download_progress = Signal(int, int)  # (bytes_downloaded, total_bytes)
 
 
 def _build_tray_icon_pixmap() -> QIcon:
@@ -84,7 +82,6 @@ class MainWindow(FluentWindow):
         self._bridge.status_changed.connect(self._on_status_changed)
         self._bridge.update_available.connect(self._show_update_toast)
         self._bridge.quit_requested.connect(self._quit)
-        self._bridge.download_progress.connect(self._on_download_progress)
 
         self.scheduler = SchedulerService(self.store, on_status_change=self._bridge.status_changed.emit)
         self.update_manager = UpdateManager(
@@ -97,7 +94,6 @@ class MainWindow(FluentWindow):
         self.selected_meeting_id: int | None = None
         self._watching_count = 0
         self._update_toast: UpdateToast | None = None
-        self._update_progress_dialog: UpdateProgressDialog | None = None
         self._pending_release: ReleaseInfo | None = None
         self._checking_updates = False
         self.tray_icon: QSystemTrayIcon | None = None
@@ -272,19 +268,6 @@ class MainWindow(FluentWindow):
         elif message.startswith("Failed to join"):
             self._notify("error", "Join failed", message)
 
-        if self._update_progress_dialog is None:
-            return
-        if message.startswith("Update failed"):
-            self._update_progress_dialog.set_error(message)
-        elif message.startswith("Downloaded (dev mode)"):
-            self._update_progress_dialog.set_finished_dev_mode(message)
-        elif message.startswith(("Downloading", "Preparing update", "Update staged")):
-            self._update_progress_dialog.set_stage(message)
-
-    def _on_download_progress(self, downloaded: int, total: int) -> None:
-        if self._update_progress_dialog is not None:
-            self._update_progress_dialog.set_download_progress(downloaded, total)
-
     # ---------- updates ----------
 
     def _check_for_updates_now(self) -> None:
@@ -332,43 +315,34 @@ class MainWindow(FluentWindow):
             self._update_toast.close()
 
     def _start_restart_and_update(self, release: ReleaseInfo) -> None:
-        """Download and stage the update on a background thread, then run
-        the normal quit sequence - by the time this process exits, the
-        detached updater is already waiting on its PID to swap files."""
+        """Hand the update to the updater and quit.
+
+        Downloading and installing both belong to the updater now, so there is
+        nothing to show progress for here: this only starts it (which returns
+        at once) and then runs the normal quit sequence. The updater has its
+        own window and waits on this process's PID.
+        """
         self.settings_page.clear_update_available()
         if self._update_toast:
-            # The progress dialog takes over as the one status surface.
             self._update_toast.close()
 
-        dlg = UpdateProgressDialog(self, release.tag)
-        dlg.finished.connect(self._on_update_progress_dialog_closed)
-        self._update_progress_dialog = dlg
-        dlg.show()
+        try:
+            started = self.update_manager.start_update(release)
+        except Exception as e:
+            logger.exception("Could not start the updater")
+            self._notify("error", "Update failed", str(e))
+            return
+        finally:
+            self._pending_release = None
 
-        def worker():
-            try:
-                will_relaunch = self.update_manager.download_and_install(
-                    release, on_progress=self._bridge.download_progress.emit
-                )
-            except Exception as e:
-                logger.exception("Update install failed")
-                self._bridge.status_changed.emit(f"Update failed: {e}")
-                return
-            finally:
-                self._pending_release = None
-
-            if will_relaunch:
-                self._force_quit = True
-                self._bridge.quit_requested.emit()
-            else:
-                self._bridge.status_changed.emit(
-                    "Downloaded (dev mode) - build the packaged .exe to test restart-and-replace."
-                )
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_update_progress_dialog_closed(self) -> None:
-        self._update_progress_dialog = None
+        if started:
+            self._force_quit = True
+            self._quit()
+        else:
+            self._notify(
+                "warning", "Not available from source",
+                "Self-update only works in a packaged build.",
+            )
 
     # ---------- tray / lifecycle ----------
 
