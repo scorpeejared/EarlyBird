@@ -173,9 +173,12 @@ class UpdateManager:
                 "gets updated even though the launcher exe does."
             )
 
-        # Relaunch the new exe at the filename/location the current one
-        # already occupies.
-        relaunch_target = install_dir / current_exe.name if staged_exe.name == current_exe.name else staged_exe
+        # Relaunch from the install directory, always. The updater script
+        # *moves* the staged files into place and then deletes the staging
+        # folder, so a path inside it is gone by the time the relaunch runs -
+        # which is what happened when the installed exe had been renamed
+        # (a browser's "EarlyBird (1).exe") and the names didn't match.
+        relaunch_target = install_dir / staged_exe.name
 
         log_path = updater_launcher.launch(
             stage_dir=stage_dir,

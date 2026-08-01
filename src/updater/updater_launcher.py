@@ -103,9 +103,34 @@ try {{
     # 3. Relaunch from the same install path either way - the new
     # version on success, the restored one after a rollback - so the
     # user is never left with nothing running.
-    Log "Relaunching: {relaunch_exe}"
+    #
+    # But not instantly: a just-written, unsigned executable is scanned on
+    # its first execution, and a onefile build unpacks its runtime to %TEMP%
+    # and immediately loads python3xx.dll from there. Launching into that
+    # scan makes the load fail with "The specified module could not be
+    # found" - the file is there, it just can't be opened yet. So wait until
+    # the exe can be opened exclusively (the scanner has let go) before
+    # starting it.
+    $exePath = "{relaunch_exe}"
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {{
+        try {{
+            $fs = [System.IO.File]::Open($exePath, 'Open', 'Read', 'None')
+            $fs.Close()
+            $ready = $true
+            break
+        }} catch {{
+            Start-Sleep -Milliseconds 500
+        }}
+    }}
+    Log "Executable ready for launch: $ready (waited $($i * 500) ms)"
+    # A little extra settle time even once it opens: the scan can still be
+    # finishing, and a second here is invisible next to a restart.
+    Start-Sleep -Milliseconds 1500
+
+    Log "Relaunching: $exePath"
     try {{
-        Start-Process -FilePath "{relaunch_exe}" -ErrorAction Stop
+        Start-Process -FilePath $exePath -ErrorAction Stop
         Log "Start-Process succeeded."
     }} catch {{
         Log "Start-Process FAILED: $($_.Exception.Message)"
