@@ -21,10 +21,19 @@ from PySide6.QtWidgets import QApplication
 # from a PyInstaller build. Modules inside src/ import each other
 # relatively; this is the only file that names them absolutely.
 from src import logging_setup, paths, settings, storage
-from src.ui.main_window import MainWindow
+from src.updater import apply_update
 
 
 def main() -> int:
+    # Updater mode: this is a copy of a freshly downloaded build, running from
+    # %TEMP% to replace the installed one. Handled before anything else so no
+    # database, scheduler or tray icon is ever touched - and before importing
+    # MainWindow, which would drag in the whole UI stack it never uses.
+    if apply_update.FLAG in sys.argv[1:]:
+        return apply_update.main(sys.argv[1:])
+
+    from src.ui.main_window import MainWindow
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -38,6 +47,10 @@ def main() -> int:
     logging_setup.configure()
     settings.ensure_data_dir()
     storage.ensure_database()
+
+    # Clear what the last update left in %TEMP% - the runner that performed
+    # the swap has finished by now, so this is the only place it can safely go.
+    apply_update.cleanup_stale_updates()
 
     window = MainWindow()
     window.show()

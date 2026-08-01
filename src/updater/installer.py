@@ -3,7 +3,7 @@ Prepares a downloaded release asset to replace the running app's files.
 
 Windows can't overwrite the .exe of a running process, so nothing here
 touches the live install directory - it only unpacks the new build into
-a scratch folder. The swap itself happens in updater_launcher.py, from a
+a scratch folder. The swap itself happens in apply_update.py, from a
 separate process, once this one has exited.
 """
 from __future__ import annotations

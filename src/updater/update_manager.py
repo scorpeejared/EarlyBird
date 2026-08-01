@@ -11,14 +11,18 @@ with the queued signals on ``_EventBridge``.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
 
-from . import downloader, github_release, installer, update_checker, updater_launcher
+from . import apply_update, downloader, github_release, installer, update_checker
 from .github_release import ReleaseInfo
 from .version import get_installed_version
-from .. import paths, settings
+from .. import logging_setup, paths, settings
 from ..logging_setup import get_logger
 
 logger = get_logger()
@@ -173,20 +177,45 @@ class UpdateManager:
                 "gets updated even though the launcher exe does."
             )
 
-        # Relaunch from the install directory, always. The updater script
-        # *moves* the staged files into place and then deletes the staging
-        # folder, so a path inside it is gone by the time the relaunch runs -
-        # which is what happened when the installed exe had been renamed
-        # (a browser's "EarlyBird (1).exe") and the names didn't match.
+        # Relaunch from the install directory, always. The updater *moves* the
+        # staged files into place and then deletes the staging folder, so a
+        # path inside it is gone by the time the relaunch runs - which is what
+        # happened when the installed exe had been renamed (a browser's
+        # "EarlyBird (1).exe") and the names didn't match.
         relaunch_target = install_dir / staged_exe.name
 
-        log_path = updater_launcher.launch(
-            stage_dir=stage_dir,
-            install_dir=install_dir,
-            relaunch_exe=relaunch_target,
-            updates_root=downloader.staging_dir(),
+        # Run the *downloaded* build as the updater, from its own temp folder.
+        # It is the new version, so the updater logic that applies an install
+        # is always the one that just shipped - a fix here reaches users on the
+        # next update rather than the one after it. Copying it out of the
+        # staging folder also leaves that folder free to be moved wholesale.
+        runner_dir = downloader.staging_dir() / "runner"
+        shutil.rmtree(runner_dir, ignore_errors=True)
+        runner_dir.mkdir(parents=True, exist_ok=True)
+        runner_exe = runner_dir / staged_exe.name
+        shutil.copy2(staged_exe, runner_exe)
+
+        command = [
+            str(runner_exe),
+            apply_update.FLAG,
+            "--wait-pid", str(os.getpid()),
+            "--install-dir", str(install_dir),
+            "--staged-dir", str(stage_dir),
+            "--relaunch-name", relaunch_target.name,
+        ]
+        # CREATE_NEW_PROCESS_GROUP unties the updater from this process's
+        # lifetime and signals; it has to outlive us to do its job.
+        creationflags = 0x00000200 if sys.platform == "win32" else 0
+        subprocess.Popen(
+            command,
+            cwd=str(runner_dir),
+            env=apply_update.sanitised_environment(),
+            creationflags=creationflags,
+            close_fds=True,
         )
-        self.last_update_log_path = log_path
+        logger.info("Launched updater: %s", " ".join(command))
+
+        self.last_update_log_path = paths.LOG_DIR / logging_setup.LOG_FILENAME
         self._report("Update staged - restarting...")
         return True
 
