@@ -20,7 +20,7 @@ from qfluentwidgets import (
     TransparentPushButton,
 )
 
-from ... import paths
+from ... import ai_provider, paths, secret_store, settings
 
 from .. import theme
 
@@ -46,6 +46,7 @@ class SettingsPage(QWidget):
     updateNowClicked = Signal()
     updateLaterClicked = Signal()
     themeModeChanged = Signal(str)  # "light" | "dark" | "auto"
+    configureAiClicked = Signal()
 
     def __init__(self, app_version: str, theme_mode: str = "light", parent=None):
         super().__init__(parent)
@@ -103,6 +104,7 @@ class SettingsPage(QWidget):
         cards.addWidget(version_card)
 
         cards.addWidget(self._build_personalization_card(theme_mode))
+        cards.addWidget(self._build_ai_card())
         cards.addWidget(self._build_data_card())
 
         cards.addWidget(_section(
@@ -158,6 +160,57 @@ class SettingsPage(QWidget):
         self._auto_radio.toggled.connect(lambda checked: checked and self.themeModeChanged.emit("auto"))
 
         return card
+
+    def _build_ai_card(self) -> CardWidget:
+        card = CardWidget(self)
+        card.setBorderRadius(theme.CARD_RADIUS)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
+        layout.addWidget(StrongBodyLabel("Screenshot import", card))
+        # Where the key actually lives depends on the machine, so don't
+        # promise a credential manager that isn't there.
+        if secret_store.is_secure():
+            storage = "the key is kept in your operating system's credential manager"
+        else:
+            storage = (
+                "this machine has no credential manager, so the key is saved "
+                "as plain text in the app's data folder"
+            )
+        caption = CaptionLabel(
+            "Importing a timetable screenshot uses an AI of your choosing. "
+            f"EarlyBird doesn't include one — you bring your own account, and {storage}.",
+            card,
+        )
+        caption.setWordWrap(True)
+        caption.setTextColor("#6B7280", "#9CA3AF")
+        layout.addWidget(caption)
+
+        self._ai_status_label = CaptionLabel("", card)
+        self._ai_status_label.setWordWrap(True)
+        layout.addWidget(self._ai_status_label)
+
+        button_row = QHBoxLayout()
+        configure_btn = PushButton(FluentIcon.ROBOT, "Choose AI provider", card)
+        configure_btn.clicked.connect(self.configureAiClicked)
+        button_row.addWidget(configure_btn)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.refresh_ai_status()
+        return card
+
+    def refresh_ai_status(self) -> None:
+        """Show which provider is set up, without ever showing the key."""
+        config = settings.get_ai_config()
+        provider = ai_provider.get(config["provider"])
+        model = config["model"].strip() or provider.default_model
+        if provider.needs_base_url and config["base_url"].strip():
+            where = f"{provider.label} at {config['base_url'].strip()}"
+        else:
+            where = provider.label
+        self._ai_status_label.setText(f"Currently using {where}" + (f" · {model}" if model else ""))
+        self._ai_status_label.setTextColor("#6B7280", "#9CA3AF")
 
     def _build_data_card(self) -> CardWidget:
         card = CardWidget(self)

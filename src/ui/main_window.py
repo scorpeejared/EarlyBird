@@ -4,16 +4,18 @@ between the pages and the scheduler/updater services.
 """
 from __future__ import annotations
 
+import mimetypes
 import threading
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QGuiApplication, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition, MessageBox, NavigationItemPosition
 
-from .. import settings
+from .. import import_screenshot, settings
 from ..logging_setup import get_logger
 from ..models import Meeting
 from ..scheduler import SchedulerService
@@ -21,6 +23,9 @@ from ..storage import MeetingStore
 from ..updater import ReleaseInfo, UpdateManager
 from ..updater.version import __version__ as APP_VERSION
 
+from .dialogs.ai_setup_dialog import AiSetupDialog, ensure_configured
+from .dialogs.import_privacy_dialog import ensure_consent
+from .dialogs.import_review_dialog import ImportReviewDialog
 from .dialogs.meeting_dialog import MeetingDialog
 from .pages.connections_page import ConnectionsPage
 from .pages.home_page import HomePage
@@ -33,6 +38,35 @@ UPDATE_REPO_OWNER = "scorpeejared"
 UPDATE_REPO_NAME = "EarlyBird"
 
 logger = get_logger()
+
+
+class _ParseWorker(QThread):
+    """Runs one screenshot parse off the GUI thread.
+
+    The request takes seconds over the network, which would freeze the window
+    if run inline. Emits (ParseResult | None, error_message).
+    """
+
+    done = Signal(object, str)
+
+    def __init__(self, image_bytes: bytes, mime_type: str, parent=None):
+        super().__init__(parent)
+        self._image_bytes = image_bytes
+        self._mime_type = mime_type
+
+    def run(self) -> None:
+        try:
+            result = import_screenshot.parse_screenshot(self._image_bytes, self._mime_type)
+            self.done.emit(result, "")
+        except import_screenshot.ParseError as e:
+            self.done.emit(None, str(e))
+        except Exception as e:  # noqa: BLE001 - a crash here must not kill the window
+            logger.warning(f"Unexpected screenshot parse failure: {type(e).__name__}: {e}")
+            self.done.emit(None, "Couldn't read this screenshot. Please try again.")
+        finally:
+            # The screenshot is not kept a moment longer than the request needs
+            # it - see the privacy notice.
+            self._image_bytes = b""
 
 
 class _EventBridge(QObject):
@@ -94,6 +128,7 @@ class MainWindow(FluentWindow):
         self.selected_meeting_id: int | None = None
         self._watching_count = 0
         self._update_toast: UpdateToast | None = None
+        self._parse_worker: _ParseWorker | None = None
         self._pending_release: ReleaseInfo | None = None
         self._checking_updates = False
         self.tray_icon: QSystemTrayIcon | None = None
@@ -133,6 +168,7 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.settings_page, FluentIcon.SETTING, "Settings", NavigationItemPosition.BOTTOM)
 
         self.home_page.addClicked.connect(self._on_add)
+        self.home_page.importClicked.connect(self._on_import_screenshot)
         self.home_page.editClicked.connect(self._on_edit)
         self.home_page.deleteClicked.connect(self._on_delete)
         self.home_page.toggleClicked.connect(self._on_toggle_auto_join)
@@ -145,6 +181,7 @@ class MainWindow(FluentWindow):
         self.settings_page.updateNowClicked.connect(self._on_inline_update_now)
         self.settings_page.updateLaterClicked.connect(self._on_inline_update_later)
         self.settings_page.themeModeChanged.connect(self._on_theme_mode_changed)
+        self.settings_page.configureAiClicked.connect(self._on_configure_ai)
 
     # ---------- data refresh ----------
 
@@ -184,7 +221,10 @@ class MainWindow(FluentWindow):
     # ---------- toasts ----------
 
     def _notify(self, kind: str, title: str, content: str) -> None:
-        factory = {"success": InfoBar.success, "warning": InfoBar.warning, "error": InfoBar.error}[kind]
+        factory = {
+            "success": InfoBar.success, "warning": InfoBar.warning,
+            "error": InfoBar.error, "info": InfoBar.info,
+        }[kind]
         factory(
             title=title, content=content, orient=Qt.Horizontal, isClosable=True,
             position=InfoBarPosition.TOP_RIGHT, duration=4000, parent=self,
@@ -199,6 +239,122 @@ class MainWindow(FluentWindow):
             self.selected_meeting_id = new_id
             self._refresh_all()
             self._notify("success", "Class added", f"'{dlg.result.title}' was scheduled.")
+
+    # ---------- import from screenshot ----------
+
+    def _on_configure_ai(self) -> None:
+        if AiSetupDialog(self).exec():
+            self.settings_page.refresh_ai_status()
+            self._notify("success", "AI updated", "Screenshot import will use the new provider.")
+
+    @staticmethod
+    def _image_to_png_bytes(image) -> bytes:
+        """Serialise a clipboard QImage to PNG bytes, in memory only."""
+        buffer = QBuffer(QByteArray())
+        buffer.open(QBuffer.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(buffer.data())
+
+    def _pick_screenshot(self) -> tuple[bytes, str] | None:
+        """Get an image from the clipboard or a file. None if cancelled."""
+        clipboard_image = QGuiApplication.clipboard().image()
+        if not clipboard_image.isNull():
+            box = MessageBox(
+                "Use the image you copied?",
+                "There's an image on your clipboard. Use that, or pick a file instead.",
+                self,
+            )
+            box.yesButton.setText("Use clipboard image")
+            box.cancelButton.setText("Choose a file...")
+            if box.exec():
+                return self._image_to_png_bytes(clipboard_image), "image/png"
+
+        path, _selected = QFileDialog.getOpenFileName(
+            self, "Choose a schedule screenshot", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.gif)",
+        )
+        if not path:
+            return None
+        try:
+            data = Path(path).read_bytes()
+        except OSError as e:
+            self._notify("error", "Couldn't open that file", str(e))
+            return None
+
+        mime_type = mimetypes.guess_type(path)[0] or "image/png"
+        if mime_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+            mime_type = "image/png"
+        return data, mime_type
+
+    def _on_import_screenshot(self) -> None:
+        """Screenshot -> draft rows -> review -> save.
+
+        The parse runs on a worker thread; everything that touches the
+        database happens back here, only after the user confirms.
+        """
+        if self._parse_worker is not None and self._parse_worker.isRunning():
+            self._notify("warning", "Still reading", "One screenshot is already being read.")
+            return
+        # Setup first, because the privacy notice has to name the provider the
+        # user actually picked. Both come before the file dialog, so nobody
+        # hunts down a screenshot only to hit a wall.
+        if not ensure_configured(self):
+            return
+        if not ensure_consent(self):
+            return
+
+        picked = self._pick_screenshot()
+        if picked is None:
+            return
+        image_bytes, mime_type = picked
+
+        self._notify("info", "Reading screenshot", "Sending the image to Gemini. This takes a few seconds.")
+
+        worker = _ParseWorker(image_bytes, mime_type)
+        worker.done.connect(self._on_parse_finished)
+        worker.finished.connect(lambda: setattr(self, "_parse_worker", None))
+        self._parse_worker = worker
+        worker.start()
+        # Local reference dropped now that the worker owns the only copy.
+        del image_bytes, picked
+
+    def _on_parse_finished(self, parsed, error_message: str) -> None:
+        if error_message:
+            self._notify("error", "Couldn't read the screenshot", error_message)
+            return
+
+        if not parsed.found_schedule:
+            self._notify(
+                "warning", "No schedule found",
+                parsed.reason or "Couldn't find a schedule table in this image.",
+            )
+            return
+
+        if parsed.dropped:
+            # Dropped rows are reported, never silently discarded.
+            self._notify(
+                "warning", "Some rows were unreadable",
+                f"{parsed.dropped} row(s) couldn't be read and aren't shown. "
+                "Add those by hand if you need them.",
+            )
+
+        dlg = ImportReviewDialog(self, parsed)
+        if not dlg.exec() or not dlg.result:
+            return
+
+        # Reuses the same MeetingStore.add() path as the Add dialog, so
+        # imported classes are ordinary meetings from here on.
+        last_id = None
+        for meeting in dlg.result:
+            last_id = self.store.add(meeting)
+        if last_id is not None:
+            self.selected_meeting_id = last_id
+        self._refresh_all()
+        count = len(dlg.result)
+        self._notify(
+            "success", "Classes imported",
+            f"{count} {'class' if count == 1 else 'classes'} added from the screenshot.",
+        )
 
     def _on_edit(self) -> None:
         m = self._selected_meeting()

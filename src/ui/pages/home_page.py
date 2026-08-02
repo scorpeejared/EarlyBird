@@ -26,6 +26,7 @@ from .. import theme
 
 class HomePage(QWidget):
     addClicked = Signal()
+    importClicked = Signal()
     editClicked = Signal()
     deleteClicked = Signal()
     toggleClicked = Signal()
@@ -60,13 +61,16 @@ class HomePage(QWidget):
         toolbar.setSpacing(8)
         add_btn = PrimaryPushButton(FluentIcon.ADD, "Add class", self)
         add_btn.clicked.connect(self.addClicked)
+        import_btn = PushButton(FluentIcon.PHOTO, "Import from screenshot", self)
+        import_btn.setToolTip("Read a syllabus or timetable image and review the classes it finds")
+        import_btn.clicked.connect(self.importClicked)
         edit_btn = PushButton(FluentIcon.EDIT, "Edit", self)
         edit_btn.clicked.connect(self.editClicked)
         delete_btn = PushButton(FluentIcon.DELETE, "Delete", self)
         delete_btn.clicked.connect(self.deleteClicked)
         toggle_btn = PushButton(FluentIcon.RINGER, "Toggle auto-join", self)
         toggle_btn.clicked.connect(self.toggleClicked)
-        for b in (add_btn, edit_btn, delete_btn, toggle_btn):
+        for b in (add_btn, import_btn, edit_btn, delete_btn, toggle_btn):
             toolbar.addWidget(b)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
@@ -175,7 +179,9 @@ class HomePage(QWidget):
         heading.setAlignment(Qt.AlignHCenter)
         layout.addWidget(heading)
 
-        hint = CaptionLabel('Press "+ Add class" above to create your first schedule.', wrap)
+        hint = CaptionLabel(
+            'Press "+ Add class" above, or import a timetable screenshot.', wrap
+        )
         hint.setAlignment(Qt.AlignHCenter)
         hint.setTextColor("#6B7280", "#9CA3AF")
         layout.addWidget(hint)

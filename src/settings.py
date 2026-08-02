@@ -26,6 +26,17 @@ SETTINGS_PATH = paths.SETTINGS_PATH
 _DEFAULTS = {
     "connections": [],
     "theme_mode": "auto",  # "light" | "dark" | "auto" (follow system)
+    # Which AI reads imported screenshots. Only the choice lives here - the
+    # API key goes to the OS credential manager, see secret_store.
+    "ai": {
+        "provider": "gemini",   # see ai_provider.PROVIDERS
+        "model": "",            # blank means the provider's default
+        "base_url": "",         # OpenAI-compatible servers only
+    },
+    # Which provider the user accepted the privacy notice for. Consenting to
+    # send a screenshot to one company is not consent to send it to another,
+    # so switching providers asks again.
+    "import_privacy_accepted_for": "",
     "updates": {
         "enabled": True,
         "channel": "stable",  # only "stable" is wired up today
@@ -62,6 +73,15 @@ def _write(full: dict) -> None:
     # mkdir here too, in case the folder was removed while the app ran.
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(full, indent=2))
+
+
+def write(full: dict) -> None:
+    """Persist a whole settings dict.
+
+    Public so secret_store can use this file as its plaintext fallback when
+    the machine has no keychain; prefer the typed helpers below otherwise.
+    """
+    _write(full)
 
 
 def _with_browser(conn: dict) -> dict:
@@ -144,6 +164,38 @@ def get_theme_mode() -> str:
 def save_theme_mode(mode: str) -> None:
     full = load()
     full["theme_mode"] = mode
+    _write(full)
+
+
+def get_ai_config() -> dict:
+    # Merge the nested defaults so a settings.json written before a new AI key
+    # existed picks up that key's default instead of a KeyError.
+    stored = load().get("ai", {})
+    merged = dict(_DEFAULTS["ai"])
+    if isinstance(stored, dict):
+        merged.update(stored)
+    return merged
+
+
+def save_ai_config(**changes) -> None:
+    full = load()
+    config = dict(_DEFAULTS["ai"])
+    stored = full.get("ai", {})
+    if isinstance(stored, dict):
+        config.update(stored)
+    config.update(changes)
+    full["ai"] = config
+    _write(full)
+
+
+def get_import_privacy_accepted_for() -> str:
+    """Provider id the privacy notice was accepted for, or ""."""
+    return str(load().get("import_privacy_accepted_for", "") or "")
+
+
+def save_import_privacy_accepted_for(provider_id: str) -> None:
+    full = load()
+    full["import_privacy_accepted_for"] = provider_id
     _write(full)
 
 

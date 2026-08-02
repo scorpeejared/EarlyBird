@@ -37,7 +37,7 @@ jobs:
           }
 
       - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name EarlyBird --clean main.py
+        run: pyinstaller --onefile --windowed --name EarlyBird --clean --collect-all google.genai --collect-all openai --collect-all keyring --copy-metadata keyring main.py
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')

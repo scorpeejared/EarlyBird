@@ -5,7 +5,7 @@ matching src/recurrence.py; only the on-screen order and labels differ.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from qfluentwidgets import CaptionLabel, TransparentPushButton, isDarkTheme, setFont
@@ -56,10 +56,17 @@ class _DayToggle(QPushButton):
 class DayOfWeekPicker(QWidget):
     """Lets the user pick which weekdays a recurring class repeats on."""
 
-    def __init__(self, initial_days: frozenset[int] | None = None, parent=None):
+    daysChanged = Signal()
+
+    def __init__(self, initial_days: frozenset[int] | None = None, parent=None,
+                 compact: bool = False):
+        """compact drops the preset buttons and the summary line, leaving just
+        the seven toggles - for places that show many pickers at once, like the
+        screenshot-import review list, where the full version is too tall."""
         super().__init__(parent)
         initial = set(initial_days or ())
         self._buttons: dict[int, _DayToggle] = {}
+        self._summary: CaptionLabel | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -76,6 +83,9 @@ class DayOfWeekPicker(QWidget):
         row.addStretch(1)
         outer.addLayout(row)
 
+        if compact:
+            return
+
         presets = QHBoxLayout()
         presets.setSpacing(4)
         for label, days in (("Weekdays", recurrence.WEEKDAYS), ("Every day", recurrence.ALL_DAYS)):
@@ -90,7 +100,9 @@ class DayOfWeekPicker(QWidget):
         outer.addWidget(self._summary)
 
     def _on_changed(self) -> None:
-        self._summary.setText(recurrence.format_repeat_label(self.get_days()))
+        if self._summary is not None:
+            self._summary.setText(recurrence.format_repeat_label(self.get_days()))
+        self.daysChanged.emit()
 
     def get_days(self) -> frozenset[int]:
         return frozenset(wd for wd, btn in self._buttons.items() if btn.isChecked())
@@ -99,4 +111,6 @@ class DayOfWeekPicker(QWidget):
         days = set(days)
         for weekday, btn in self._buttons.items():
             btn.setChecked(weekday in days)
-        self._summary.setText(recurrence.format_repeat_label(frozenset(days)))
+        if self._summary is not None:
+            self._summary.setText(recurrence.format_repeat_label(frozenset(days)))
+        self.daysChanged.emit()

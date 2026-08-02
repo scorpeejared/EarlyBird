@@ -74,8 +74,12 @@ class _TestRunWorker(QThread):
             self.done.emit(False, f"Test run failed: {e}")
 
 
-def _looks_like_google_meet_link(text: str) -> tuple[bool, str]:
-    """Returns (is_valid, error_message)."""
+def looks_like_google_meet_link(text: str) -> tuple[bool, str]:
+    """Returns (is_valid, error_message).
+
+    Public because the screenshot-import review screen validates the same
+    links; one rule, one place.
+    """
     try:
         parsed = urlparse(text)
     except ValueError:
@@ -303,7 +307,7 @@ class MeetingDialog(MessageBoxBase):
             self._warn("Missing info", "Google Meet link is required.")
             return False
 
-        is_valid, error_message = _looks_like_google_meet_link(link)
+        is_valid, error_message = looks_like_google_meet_link(link)
         if not is_valid:
             self._warn("Invalid link", error_message)
             return False

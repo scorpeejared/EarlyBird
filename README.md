@@ -28,6 +28,36 @@ Once a recurring class has been joined for the day, EarlyBird moves on to its ne
 
 ---
 
+## Import From a Screenshot
+
+Rather than typing in five classes one at a time, paste or open a screenshot of your timetable and let an AI read it.
+
+EarlyBird extracts the title, day(s) or date, time, and Meet link for each class, then shows them in a **review screen** where every field stays editable. Anything the parser wasn't sure about — an ambiguous AM/PM, a date with no year, a missing link — is flagged with a warning badge so you know where to look.
+
+**Nothing is saved until you confirm.** Parsed rows are a draft, exactly like the Add Class form before you press Save. Rows can be edited or unticked individually, and a class with no Meet link is saved as a manual (non-auto-join) entry rather than blocking the whole import.
+
+### Bring your own AI
+
+EarlyBird doesn't include an AI. You pick a provider and use your own account, under **Settings → Screenshot import → Choose AI provider**:
+
+| Provider | Notes |
+|----------|-------|
+| **Google Gemini** | Defaults to `gemini-3.6-flash`. Free keys from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| **OpenAI** | Defaults to `gpt-5.6`. Keys from [platform.openai.com/api-keys](https://platform.openai.com/api-keys). |
+| **Other (OpenAI-compatible)** | Any server speaking OpenAI's chat API — OpenRouter, Groq, Together, or a local one like Ollama, LM Studio or vLLM. You supply the address and model name. |
+
+Your key is stored in the operating system's credential manager (Windows Credential Manager, macOS Keychain, or the Linux Secret Service) — never in `settings.json`. If no credential manager is available, the app says so plainly before saving anything.
+
+### Privacy
+
+Before the first import, EarlyBird explains exactly where your image is going and asks you to accept. The notice names the provider you actually picked, and each provider's terms differ — Gemini's free tier uses submitted content to improve Google's products, while OpenAI states API content isn't used for training by default. Switching providers asks again, because agreeing to send a screenshot to one company isn't agreeing to send it to another.
+
+> **Tip:** point the compatible provider at a local server such as Ollama and the screenshot never leaves your computer at all.
+
+A syllabus screenshot often includes your name, your school, and classes you aren't importing — crop it first if you'd rather not send those. The image itself is never written to disk: it's held in memory only and discarded as soon as you confirm or cancel the review.
+
+---
+
 ## Browser Profile Management
 
 Out of the box, EarlyBird joins through its own isolated Chrome profile. Sign into Google in it once and it stays signed in between launches, without touching your everyday browsing session.
@@ -246,6 +276,9 @@ The application will automatically handle the meeting when its scheduled time ar
     ├── notifier.py           # Desktop notifications
     ├── recurrence.py         # Recurring meeting calculations
     ├── launchers.py          # Browser launcher script generator
+    ├── import_screenshot.py  # Screenshot -> reviewable draft meetings
+    ├── ai_provider.py        # Bring-your-own-AI backends (Gemini/OpenAI/compatible)
+    ├── secret_store.py       # API keys, OS credential manager first
     │
     ├── automation.py         # Playwright automation (isolated profile, CDP)
     ├── automation_uia.py     # Windows UI Automation backend
@@ -257,7 +290,7 @@ The application will automatically handle the meeting when its scheduled time ar
         ├── main_window.py    # FluentWindow: navigation + backend wiring
         ├── theme.py          # Accent color and semantic status colors
         ├── pages/            # Classes / Connections / Settings pages
-        ├── dialogs/          # Add/Edit class, Add/Edit connection
+        ├── dialogs/          # Add/Edit class, connections, screenshot import
         └── widgets/          # Stat cards, meeting cards, day picker, etc.
 ```
 
